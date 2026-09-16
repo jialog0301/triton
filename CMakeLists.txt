@@ -414,6 +414,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
   # Define triton library
   string(JOIN "," TRITON_BACKENDS_TUPLE ${TRITON_CODEGEN_BACKENDS})
 
+  if(NOT "ventus" IN_LIST TRITON_PLUGIN_NAMES)
+    list(APPEND TRITON_PLUGIN_NAMES "ventus")
+  endif()
   if (DEFINED TRITON_PLUGIN_NAMES)
     string(JOIN "," TRITON_BACKENDS_TUPLE ${TRITON_BACKENDS_TUPLE} ${TRITON_PLUGIN_NAMES})
   endif()
@@ -532,6 +535,9 @@ endif()
 find_package(Threads REQUIRED)
 
 add_subdirectory(third_party/f2reduce)
+if(NOT TARGET VentusArtifact)
+  add_subdirectory(third_party/ventus)
+endif()
 add_subdirectory(bin)
 add_subdirectory(test)
 

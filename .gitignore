@@ -49,6 +49,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache
 
+# Compiled Ventus reference launcher binary (built by its own Makefile)
+third_party/ventus/reference_launcher/ventus_spike_smoke
+
 # Environments
 .venv
 venv/

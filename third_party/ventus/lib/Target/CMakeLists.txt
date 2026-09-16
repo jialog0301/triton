@@ -1,0 +1,3 @@
+add_library(VentusArtifactImpl STATIC VentusArtifact.cpp)
+target_link_libraries(VentusArtifactImpl PUBLIC VentusArtifact LLVMSupport)
+target_compile_options(VentusArtifactImpl PRIVATE ${TRITON_DISABLE_EH_RTTI_FLAGS})
