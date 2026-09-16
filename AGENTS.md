@@ -9,5 +9,29 @@
 - Lit tests can be run locally (no GPU required).
 - Compiler crashes sometimes print an MLIR reproducer (external_resources / mlir_reproducer). Save the full MLIR + {-# ... #-} metadata to `/tmp/<file>.mlir`, then run `triton-opt /tmp/<file>.mlir --run-reproducer` to reproduce locally.
 
+### Ventus backend runtime tests (Spike)
+
+The Ventus V1 tests execute the compiled Triton ELF on the instruction-level
+Ventus Spike simulator through `third_party/ventus/backend/launcher.py` +
+`libspike_driver.so`; they need no GPU. Run the backend suite (pytest):
+
+```bash
+source .venv/bin/activate
+export TRITON_HOME="$PWD/.triton-home"
+export PYTHONPATH="$PWD/python"
+# ABI-golden regeneration requires the pinned Ventus tool paths:
+export VENTUS_CLANG=.../ventus-env/install/bin/clang
+export VENTUS_OPT=.../ventus-env/install/bin/opt
+export VENTUS_LLC=.../ventus-env/install/bin/llc
+export VENTUS_LLD=.../ventus-env/install/bin/ld.lld
+python -m pytest python/test/unit/ventus/ -q
+```
+
+`test_vector_add_on_spike` and `test_vector_add_manifest_gate4` are the M1
+Gate 4 (Spike execution) baseline: the manifest is only accepted by
+`ventus.VentusKernelMetadata.validate()` after `launcher_input`/`test_result`
+are recorded. Native libtriton changes (e.g. `third_party/ventus/triton_ventus.cc`
+bindings) require a rebuild first: `cd "$(BUILD_DIR)"; ninja triton`.
+
 ## C++ Guidelines
 - In C++, never put side-effecting code in `assert`. Assertions may be compiled out, so perform mutations and other required computation before the assertion and assert only the resulting condition. This guideline does not apply to Python `assert` statements.

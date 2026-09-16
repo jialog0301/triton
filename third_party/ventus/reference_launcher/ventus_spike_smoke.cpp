@@ -60,12 +60,15 @@ struct Config {
 
 void usage(const char *argv0) {
   std::cout << "usage: " << argv0
-            << " --elf PATH --entry ADDR --grid X,Y,Z --local X,Y,Z"
+            << " --elf PATH --entry ADDR --grid X,Y,Z --local 16,1,1"
                " --lds-size BYTES --pds-size BYTES"
                " --input PATH:BYTES [--input PATH:BYTES ...]"
                " --output PATH:BYTES --expected PATH:BYTES"
                " [--sgpr N] [--vgpr N] [--timeout-ms N]"
-               " [--log PATH] [--args-log PATH]\n";
+               " [--log PATH] [--args-log PATH]\n"
+            << "legacy-8x2 launch shape only (8 lanes/warp x 2 warps).\n"
+               "For V1 Triton kernels use third_party/ventus/backend/"
+               "launcher.py with --profile v1-32 or v1-64.\n";
 }
 
 uint64_t parse_u64(const std::string &value, const char *name) {
@@ -157,10 +160,21 @@ Config parse_args(int argc, char **argv) {
     throw std::runtime_error("missing required launcher option");
   if (config.entry > std::numeric_limits<uint32_t>::max())
     throw std::runtime_error("entry is not a valid RV32 address");
-  if (config.local[1] != 1 || config.local[2] != 1 ||
-      (config.local[0] != 32 && config.local[0] != 64))
+  // This tool implements the legacy Shape: 8 lanes per warp. Its
+  // `warp_count` is derived as `local[0] / 8`, so accepting a 32- or 64-lane
+  // local size would launch the same lane count split into more, smaller
+  // warps than a V1 kernel was compiled for -- a silent divergence that only
+  // shows up as an output mismatch. V1 kernels belong on the Python
+  // reference launcher (`third_party/ventus/backend/launcher.py`), which
+  // selects a named launch profile and reads the kernel's own resource
+  // record.
+  if (config.local[0] != 16)
     throw std::runtime_error(
-        "local must be 32,1,1 or 64,1,1; legacy vecadd.riscv uses 16 lanes");
+        "this legacy smoke tool launches 8-lane warps and supports only "
+        "--local 16,1,1; use third_party/ventus/backend/launcher.py with a "
+        "named profile (v1-32/v1-64) for V1 Triton kernels");
+  if (config.local[1] != 1 || config.local[2] != 1)
+    throw std::runtime_error("local must be 16,1,1");
   if (config.grid[1] != 1 || config.grid[2] != 1)
     throw std::runtime_error("only one-dimensional grid is supported");
   if (config.output.size != config.expected.size)

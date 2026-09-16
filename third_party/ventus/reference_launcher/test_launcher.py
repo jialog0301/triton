@@ -1,7 +1,7 @@
 import subprocess
 
 
-def test_launcher_help():
+def test_launcher_help_documents_legacy_scope():
     result = subprocess.run(
         ["third_party/ventus/reference_launcher/ventus_spike_smoke", "--help"],
         check=False,
@@ -10,9 +10,13 @@ def test_launcher_help():
     )
     assert result.returncode == 0
     assert "--elf PATH" in result.stdout
+    assert "--local 16,1,1" in result.stdout
+    # The tool must point V1 kernels at the profile-driven launcher instead of
+    # silently launching them with 8-lane warps.
+    assert "backend/launcher.py" in result.stdout
 
 
-def test_launcher_rejects_unsupported_local_size():
+def test_launcher_rejects_v1_local_size():
     result = subprocess.run(
         [
             "third_party/ventus/reference_launcher/ventus_spike_smoke",
@@ -23,7 +27,7 @@ def test_launcher_rejects_unsupported_local_size():
             "--grid",
             "1,1,1",
             "--local",
-            "8,1,1",
+            "32,1,1",
             "--lds-size",
             "4096",
             "--pds-size",
@@ -40,4 +44,5 @@ def test_launcher_rejects_unsupported_local_size():
         text=True,
     )
     assert result.returncode == 2
-    assert "local must be" in result.stderr
+    assert "8-lane warps" in result.stderr
+    assert "backend/launcher.py" in result.stderr
