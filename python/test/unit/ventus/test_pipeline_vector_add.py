@@ -351,6 +351,26 @@ def test_vector_add_on_rtl(ventus_backend, monkeypatch, tmp_path):
     assert result["simulated_time_ns"] > 0
 
 
+def test_vector_add_tiled_on_spike(ventus_backend, monkeypatch, tmp_path):
+    """A tile larger than the warp: the grid follows the tile, not the lanes.
+
+    With `BLOCK=256` and 32 lanes each program covers 8 elements, so `n=1024`
+    needs 4 programs rather than the 32 a one-element-per-lane launch would use.
+    This is the shape that measured fastest on the cycle model (see README 6),
+    and it is the case where deriving the grid from `local_size` would launch 32
+    programs and leave 28 of them fully masked off -- correct, but eight times
+    the per-program overhead.
+    """
+    _compile(vector_add_kernel, {"BLOCK": 256}, 1, monkeypatch, tmp_path)
+    elf_path = _stage_file(tmp_path / "cache", ".elf")
+    launcher = importlib.import_module("triton.backends.ventus.launcher")
+    result = launcher.run_vector_add(
+        launcher.LaunchSpec(elf=elf_path, n_elements=1024, local_size=32,
+                            elements_per_program=256))
+    assert result["grid"] == 4
+    assert result["num_mismatches"] == 0
+
+
 def test_2d_tile_vector_add_on_spike(ventus_backend, monkeypatch, tmp_path):
     """A rank-2 tile compiles and executes on Spike.
 

@@ -353,6 +353,11 @@ class LaunchSpec:
     # (`pocl_ventus.cc`), and register declarations steer the model's warp
     # scheduling, so a cross-implementation comparison has to match them.
     force_resources: bool = False
+    # Elements each program covers. A Triton tile (`BLOCK`) is not necessarily
+    # the number of lanes, so the grid cannot always be derived from
+    # `local_size`; this is the divisor that `ceil(n / x)` uses. Defaults to one
+    # element per work-item, which is what the OpenCL arm does.
+    elements_per_program: int = 0
 
     def __post_init__(self):
         self.elf = Path(self.elf)
@@ -473,7 +478,8 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
             f"{spec.profile!r} (warps_per_workgroup="
             f"{profile.warps_per_workgroup})")
     local = profile.local_size_x
-    grid = (n + local - 1) // local
+    elements_per_program = spec.elements_per_program or local
+    grid = (n + elements_per_program - 1) // elements_per_program
     nb = n * 4
     entry = _kernel_entry(spec.elf, spec.kernel_name)
     resources = _resource_record(spec.elf, spec.kernel_name)

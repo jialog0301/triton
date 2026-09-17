@@ -40,6 +40,20 @@ VENTUS_ROOT = REPO / "third_party/ventus"
 BASELINE_DIR = Path(__file__).resolve().parent
 INSTALL = Path("/home/weijiale/Code/cuda2rvv/ventus-env/install")
 
+# Divisibility hints for the Triton arm (`--hint`). They are truthful here --
+# device buffers come from page-granular allocations, see `_Driver.alloc` -- but
+# on this target they are also harmful: the coalescer spends them on
+# `sizePerThread`, which gives each thread consecutive elements and leaves the
+# 32 lanes of a warp striding through memory by the vector width instead of
+# covering consecutive addresses. Measured: 85845 ns (warp-contiguous, the
+# default) versus 229185 ns (per-thread contiguous) for the same kernel, same
+# grid, same instruction count. The attribute dictionary is keyed by argument
+# *path* (`(index,)`), not by name (see `code_generator.py`).
+DIVISIBILITY_BYTES = 16
+
+def pointer_attrs(subset):
+    return {(i,): [["tt.divisibility", DIVISIBILITY_BYTES]] for i in subset}
+
 # Resource declarations the OpenCL arm sends, from `pocl_ventus.cc`
 # (`ldssize`/`pdssize`/`sgpr_usage`/`vgpr_usage`). The Triton arm is launched
 # with `force_resources` so both arms declare the same numbers: register
@@ -116,7 +130,8 @@ def run_opencl_arm(n: int, local: int, backend: str) -> dict:
 # Triton arm (runs in its own process; see the module docstring)
 # --------------------------------------------------------------------------- #
 
-def _triton_child(n: int, local: int, backend: str, cache: Path) -> int:
+def _triton_child(n: int, local: int, block: int, hint: bool, backend: str,
+                  cache: Path) -> int:
     """Compile and launch the Triton kernel, printing one JSON line."""
     import triton
     import triton.backends as triton_backends
@@ -147,24 +162,29 @@ def _triton_child(n: int, local: int, backend: str, cache: Path) -> int:
         fn=vector_add_kernel,
         signature={"x_ptr": "*fp32", "y_ptr": "*fp32", "z_ptr": "*fp32",
                    "n": "i32"},
-        constexprs={"BLOCK": local},
+        constexprs={"BLOCK": block},
+        attrs=pointer_attrs((0, 1, 2)) if hint else None,
     ), target=GPUTarget("ventus", "ventus-gpgpu", 32), options={"num_warps": 1})
 
     launcher = importlib.import_module("triton.backends.ventus.launcher")
     result = launcher.run_vector_add(
         launcher.LaunchSpec(elf=next(cache.rglob("*.elf")), n_elements=n,
                             local_size=local, driver=backend,
+                            elements_per_program=block,
                             force_resources=True, **OPENCL_DECLARED))
     print(json.dumps({
         "grid": result["grid"],
         "num_mismatches": result["num_mismatches"],
         "driver_total_ns": result["simulated_time_ns"],
         "declared": OPENCL_DECLARED,
+        "block": block,
+        "hint": hint,
     }))
     return 0
 
 
-def run_triton_arm(n: int, local: int, backend: str) -> dict:
+def run_triton_arm(n: int, local: int, block: int, hint: bool,
+                   backend: str) -> dict:
     cache = Path(tempfile.mkdtemp(prefix="ventus-measure-cache-"))
     env = ventus_env(backend)
     env["PYTHONPATH"] = str(REPO / "python")
@@ -172,7 +192,8 @@ def run_triton_arm(n: int, local: int, backend: str) -> dict:
     env["TRITON_CACHE_DIR"] = str(cache / "triton")
     proc = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), "--arm", "triton",
-         "--n", str(n), "--local", str(local), "--backend", backend,
+         "--n", str(n), "--local", str(local), "--block", str(block),
+         "--backend", backend, "--hint" if hint else "--no-hint",
          "--cache", str(cache)],
         capture_output=True, text=True, env=env, cwd=str(REPO), check=False)
     payload = next((line for line in proc.stdout.splitlines()
@@ -188,6 +209,14 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=1024)
     ap.add_argument("--local", type=int, default=32)
+    ap.add_argument("--block", type=int, default=0,
+                    help="Triton tile size in elements (default: --local)")
+    ap.add_argument("--hint", action=argparse.BooleanOptionalAction, default=False,
+                    help="state the pointers' divisibility to the Triton arm. Off "
+                         "by default: it lets the coalescer give each thread "
+                         "several consecutive elements, and on this target that "
+                         "breaks warp-level coalescing (measured 2.7x slower with "
+                         "identical code, see README 6)")
     ap.add_argument("--backend", default="spike",
                     choices=["spike", "cyclesim", "rtlsim", "gvm", "auto"])
     ap.add_argument("--skip-triton", action="store_true")
@@ -197,14 +226,16 @@ def main() -> int:
     ap.add_argument("--cache", default=None, help="internal")
     args = ap.parse_args()
 
+    block = args.block or args.local
     if args.arm == "triton":
-        return _triton_child(args.n, args.local, args.backend,
+        return _triton_child(args.n, args.local, block, args.hint, args.backend,
                              Path(args.cache))
 
-    print(f"# n={args.n} local={args.local} backend={args.backend}"
-          f" grid={(args.n + args.local - 1) // args.local}")
+    print(f"# n={args.n} local={args.local} block={block} "
+          f"backend={args.backend} hint={args.hint} "
+          f"grid={(args.n + block - 1) // block}")
     if not args.skip_triton:
-        t = run_triton_arm(args.n, args.local, args.backend)
+        t = run_triton_arm(args.n, args.local, block, args.hint, args.backend)
         print(f"triton   grid={t.get('grid')} "
               f"mismatches={t.get('num_mismatches')} "
               f"kernel_model_ns={t.get('kernel_model_ns')} "

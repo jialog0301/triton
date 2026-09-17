@@ -31,7 +31,6 @@
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-
 #include "llvm/ADT/SmallVector.h"
 
 namespace mlir::triton::ventus {
@@ -148,8 +147,6 @@ struct VentusLoadOpConversion
       others = isTensor ? unpackLLElements(loc, llOther, rewriter)
                         : SmallVector<Value>{llOther};
 
-    // Conservative alignment: the natural element size. Wider alignment from
-    // AxisInfo is a later vectorization optimization.
     SmallVector<Value> results;
     for (auto [i, ptrElem] : llvm::enumerate(ptrs)) {
       Value pred = masks.empty() ? Value{} : masks[i];
@@ -159,8 +156,8 @@ struct VentusLoadOpConversion
         results.push_back(loaded.getRes());
         continue;
       }
-      Value other = others.empty() ? zeroOf(rewriter, loc, llvmElemTy)
-                                   : others[i];
+      Value other =
+          others.empty() ? zeroOf(rewriter, loc, llvmElemTy) : others[i];
       results.push_back(emitPredicatedLoad(rewriter, loc, ptrElem, llvmElemTy,
                                            pred, other, elemBytes));
     }
