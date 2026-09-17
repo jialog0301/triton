@@ -127,6 +127,10 @@ VRES v1 资源记录：24 字节，字段序 `[vgpr, sgpr, lds, pds]`，由 Vent
 
 ### 4.1 驱动与 cycle 级测量（2026-09-17 打通）
 
+**验证路径的决策（2026-09-17）：正确性验证继续用 spike。** spike 快、无版本依赖、无需
+nocache/时钟等前提，因此它是唯一的功能回归目标；cyclesim 与 rtlsim 只作为**按需测量**手段
+（`LaunchSpec.driver` 显式选择），不进日常验证回路。理由见 §4.2。
+
 `launcher.py` 按名选择驱动（`LaunchSpec.driver`，`DRIVERS` 表）：`spike`（功能）、`cyclesim`
 （**计时真值**）、`rtlsim`、`gvm`、`auto`。五者导出同一套 `vt_*` API（`llvm-nm` 核对过），
 因此切换只是换一个 `.so`；结果里新增 `driver` 与 `simulated_time_ns` 字段。
@@ -185,6 +189,11 @@ RTL 9075 ns vs cyclesim 15830 ns 不能当模型偏差——要得到模型校�
 
 rtlsim 也是**一进程一次**：第二次 `vt_dev_open` 因 driver 里
 `spdlog::stdout_color_mt("ventus")` 重复注册而 `terminate`（driver 侧一行可修：已存在就取旧的）。
+
+**因此 RTL 不参与日常验证**（见 §4.1 的决策）：装着的模型是 nocache 变体、grid 上限 2、没有版本记录
+（`gpgpu` 树正在被实时编辑），任何一条都足以让"每次提交跑 RTL"失去意义。套件里保留
+`test_vector_add_on_cyclesim` / `test_vector_add_on_rtl` 两个小测试，只用于守护驱动接线本身
+（各 ~0.2 s）；功能正确性的权威仍是 spike。
 
 ## 5. 与 NVIDIA / AMD 的 pass 对照（MMA 视角）
 
@@ -297,7 +306,7 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
 
 | 序 | 内容 | 依赖 | 论文价值 |
 |---|---|---|---|
-| **P0** | 测量闭环：~~驱动可选 + cycle 级数字~~（已完成：spike/cyclesim/rtlsim/gvm/auto + `simulated_time_ns`，见 §4.1）；**还差**：① 统一测量窗口做 cyclesim↔RTL 模型校准（§4.2）；② RTL 多波分发（grid>2 现在 abort）；③ OpenCL(POCL) 基线数字（`ventus-env/pocl` 的 ventus device + `install/lib/libpocl.so` 已在位） | ② 若在 driver/RTL 侧，属工具链改动 | 使后续所有结论可证 |
+| **P0** | 测量闭环：~~驱动可选 + cycle 级数字~~（已完成：spike/cyclesim/rtlsim/gvm/auto + `simulated_time_ns`，见 §4.1）；**还差**：OpenCL(POCL) 基线数字（`ventus-env/pocl` 的 ventus device + `install/lib/libpocl.so` 已在位）。*已降级*：RTL 多波分发修复、cyclesim↔RTL 模型校准——验证路径已定 spike（§4.1），这两项等 P1 需要可引用的 RTL 数字时再做 | — | 使后续所有结论可证 |
 | **P1** | 布局/向量化/占用率：~~LinearLayout 化索引~~（已完成，见第 6 节）、`sizePerThread`、`num_warps`、coalesce；去除逐元素标量访存 | — | "Triton 生成 vs OpenCL/手写"主结果 |
 | **P2** | LDS + barrier：`add_allocate_shared_memory` + membar + 实现 `storeDShared`/`loadDShared`；barrier 走文本注入或 inline asm | 核心基建已备 | 支撑 tiling/reduction/MMA |
 | **P3** | 分歧硬件（`vbranch`/`join`/掩码栈）与现有软件谓词路径做 A/B | 工具链（新内建/CC） | **论文核心差异化**（软件谓词一臂已实现） |
