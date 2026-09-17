@@ -11,7 +11,8 @@ MLIR/LLVM 下降低源，`toolchain/` 记录工具链身份与边界事实，`re
   仅作为背景资料，不再约束技术选型。
 - **硬件计划：上 FPGA。交付物：论文级研究。** 因此性能结论必须有真实测量支撑：
   Spike 只是功能仿真，cycle 级数值以已安装的 `libVentusCycleSim.so` + `libramulator.so` +
-  `libcyclesim_driver.so` 为准（当前 `launcher.py` 仍硬编码 `libspike_driver.so`，需改为可选）。
+  `libcyclesim_driver.so` 为准——`launcher.py` 现已按名选择驱动（`LaunchSpec.driver`，
+  见 §2 与 §8）。
 - **Ventus 专有硬件特性是要实现的目标，不是要规避的限制**：分歧硬件（`vbranch`/`join`、
   硬件掩码栈）、寄存器与内存布局、LDS/PDS 共享内存、M4K8N4 MMA（待 M3 契约）。
 - 工具链（`ventus-env` 内的 LLVM 16 fork）**可以修改**。`toolchain/README.md` 所述的
@@ -27,6 +28,7 @@ MLIR/LLVM 下降低源，`toolchain/` 记录工具链身份与边界事实，`re
 | 版本化 manifest | 完成 | `test_vector_add_manifest_gate4`；编译 gate 记录 argv/stdout/stderr/exit/tool 哈希 |
 | 索引生成（布局无关） | 完成 | 手写 1-D 公式已删除，改用核心 `populateMakeRangeOpToLLVMPattern`（`ttg::toLinearLayout` + `emitIndices`）；2-D tile 与 2-warp 均在 Spike 上 `num_mismatches=0` |
 | 单测 | 28 项：27 通过 | `python/test/unit/ventus/`；唯一红是 `test_toolchain_identity` 的外部 gpgpu 组件漂移（见 2.1） |
+| cycle 级测量 | 打通（基线数字待补） | `LaunchSpec.driver` 可选 spike / cyclesim / rtlsim / gvm / auto；cyclesim 已能跑 grid>1 并回报模型时间：n=32/64/100 → 15830/20780/31910 ns（10 ns 时钟，见 §4.1） |
 | ELF 体积 | 26 KB | `--gc-sections -u <kernel>` 裁剪前为 14 MB |
 | 后端可用性 | 目标 `GPUTarget("ventus","ventus-gpgpu",32)`；`triton.compile` 可用 | `driver.py` 仍是 stub，`kernel[grid](...)` 尚不可用 |
 
@@ -122,6 +124,34 @@ call void @llvm.riscv.ventus.barrier(i32 1)
 VRES v1 资源记录：24 字节，字段序 `[vgpr, sgpr, lds, pds]`，由 Ventus LLVM 16 后端依据
 `ventus_kernel` 约定自动生成，落在 `.ventus.resource.<kernel>` 段；`backend/manifest.py` 解析后
 填入 `md.resources`。**注意 LDS/PDS 的声明值尚需与真实需求一致**，当前 `metadata["shared"]` 仍写死 0。
+
+### 4.1 驱动与 cycle 级测量（2026-09-17 打通）
+
+`launcher.py` 按名选择驱动（`LaunchSpec.driver`，`DRIVERS` 表）：`spike`（功能）、`cyclesim`
+（**计时真值**）、`rtlsim`、`gvm`、`auto`。五者导出同一套 `vt_*` API（`llvm-nm` 核对过），
+因此切换只是换一个 `.so`；结果里新增 `driver` 与 `simulated_time_ns` 字段。
+
+计时数字取自模拟器自身：所有设备的 `vt_dump_perf` 都是空实现（`return 0`），所以 launcher 直接
+dlopen `libVentusCycleSim.so` 调 `ventus_cyclesim_get_time(dev)`（`vt_dev_open` 返回的句柄就是
+`ventus_cyclesim_t *`）。时钟周期 10 ns（`cyclesim/src/parameters.h:42`），故
+`cycles = simulated_time_ns / 10`。实测（同一 ELF，`num_warps=1`，`mismatches=0`）：
+
+| n | grid | simulated_time_ns |
+|---|---|---|
+| 32 | 1 | 15830 |
+| 64 | 2 | 20780 |
+| 100 | 4 | 31910 |
+| 128 | 4 | 31940 |
+
+**两条 spike 掩盖的元数据事实**（都只在 grid>1 暴露，见 §8）：cyclesim 按
+`pdsSize * wf_size * wg_size * grid` 在 `pdsBaseAddr` 处圈定私有内存（并在结束时断言该范围确实按此
+大小分配过），而 `spike_device::run` 忽略该地址、给每个 work-group 固定 `0x10000000`；cyclesim 的
+`driver_metadata_t` 比 spike 多一个尾部 `kernel_name` 指针，不填就是野指针（表现为内核名乱码，
+grid>1 时构造 `std::string` 直接 abort）。
+
+**一个进程只能开一次 cyclesim**：`ventus_cyclesim_init` 会调 `sc_set_time_resolution`，第二次报
+`(E514) ... simulation running` 并终止进程。launcher 用 `sys` 上的进程级标志提前抛 Python 异常
+（模块级全局会被后端发现测试的清 `sys.modules` 重置），因此测试里只有一次 cyclesim 启动。
 
 ## 5. 与 NVIDIA / AMD 的 pass 对照（MMA 视角）
 
@@ -234,7 +264,7 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
 
 | 序 | 内容 | 依赖 | 论文价值 |
 |---|---|---|---|
-| **P0** | 测量闭环：`launcher.py` 的 `DRIVER_SO` 改为可选驱动（cyclesim / auto_select），并建立 OpenCL(POCL) 基线数字 | — | 使后续所有结论可证 |
+| **P0** | 测量闭环：~~`launcher.py` 的 `DRIVER_SO` 改为可选驱动~~（已完成：spike/cyclesim/rtlsim/gvm/auto + `simulated_time_ns`，见 §4.1）；**还差**：OpenCL(POCL) 基线数字（`ventus-env/pocl` 的 ventus device + `install/lib/libpocl.so` 已在位） | — | 使后续所有结论可证 |
 | **P1** | 布局/向量化/占用率：~~LinearLayout 化索引~~（已完成，见第 6 节）、`sizePerThread`、`num_warps`、coalesce；去除逐元素标量访存 | — | "Triton 生成 vs OpenCL/手写"主结果 |
 | **P2** | LDS + barrier：`add_allocate_shared_memory` + membar + 实现 `storeDShared`/`loadDShared`；barrier 走文本注入或 inline asm | 核心基建已备 | 支撑 tiling/reduction/MMA |
 | **P3** | 分歧硬件（`vbranch`/`join`/掩码栈）与现有软件谓词路径做 A/B | 工具链（新内建/CC） | **论文核心差异化**（软件谓词一臂已实现） |
@@ -257,6 +287,15 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
   lowering 都会带上它，`backend/compiler.py::_strip_or_disjoint()` 在文本层去掉。同类风险：消费端
   LLVM 若引入新的标志/关键字（如 `icmp samesign`），会在 elf 阶段的 `opt -passes=verify` 才暴露。
 - `--gc-sections` 必须配 `-u <kernel>`，否则内核被静默删除（已有测试双向守护）。
+- **PDS 是"每 work-item 的大小、每次 launch 的范围"**：`pdsBaseAddr` 处必须按
+  `pdsSize * wf_size * wg_size * grid` 连续分配（`cyclesim/src/task.cpp:50` 如此计算并断言）。
+  spike 忽略该地址，所以只按单 work-group 分配在 spike 上永远看不出问题——只有 grid>1 的
+  cyclesim 才暴露。
+- **`driver_metadata_t` 各设备不同构**：cyclesim 尾部多一个 `kernel_name` 指针，spike/gvm/rtlsim
+  没有。漏填会让 cyclesim 打印乱码内核名，并在 grid>1 时以
+  `basic_string: construction from null is not valid` abort。launcher 的 `_MetaData` 按最长形态声明。
+- **cyclesim 一个进程只能跑一次**（SystemC 二次初始化：`(E514) set time resolution failed`），
+  且驱动忽略 `vt_ready_wait` 的 timeout（`(void)timeout;`），失控的启动只能用外部超时兜住。
 - `version.json` 尚未纳入版本控制，新克隆会缺该文件（`VentusBackend.hash()` 与身份测试都依赖它）。
 
 ## 9. 未决 / 外部依赖

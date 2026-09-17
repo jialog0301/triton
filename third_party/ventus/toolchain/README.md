@@ -133,6 +133,14 @@ current dirty `vftta_vv.h` experiment. That experiment is intentional pre-M3
 work, but it must be revised and rebuilt against the newer Chisel M4K8N4 design
 after M3 establishes a verified source/generated-RTL/testbench record.
 
+The installed `libcyclesim_driver.so` (cycle-level SystemC + ramulator) is
+reachable through the same `vt_*` API as the Spike driver and is selected by
+`LaunchSpec.driver`; the reference launcher reads model time from
+`libVentusCycleSim.so` because every device's `vt_dump_perf` is a no-op. It
+accepts a grid larger than one only if `pdsBaseAddr` was sized over the whole
+grid and if the extra trailing `kernel_name` field of its `driver_metadata_t` is
+set — both are launcher-side facts recorded in the backend README (§4.1, §8).
+
 The runtime-side resource units are recorded. Task 8 replaced the legacy four-
 `uint16` payload with the tested 24-byte `VRES` v1 record containing four
 `uint32` resource fields. The transport remains non-release because it has no

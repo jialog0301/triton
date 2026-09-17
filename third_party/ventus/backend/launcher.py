@@ -36,13 +36,47 @@ import ctypes
 import json
 import struct
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 INSTALL = Path("/home/weijiale/Code/cuda2rvv/ventus-env/install")
-DRIVER_SO = INSTALL / "lib" / "libspike_driver.so"
 LLVM_NM = INSTALL / "bin" / "llvm-nm"
+
+# Launchable device drivers. All five export the same `vt_*` API (checked with
+# llvm-nm), so a launch picks one by name:
+#   spike     instruction-level functional simulation (the M1 baseline)
+#   cyclesim  cycle-level SystemC GPGPU + ramulator DRAM. This is the timing
+#             source of truth: AGENTS.md requires performance numbers to come
+#             from here, spike being functional-only.
+#   rtlsim    Verilator RTL simulation
+#   gvm       the original GVM model
+#   auto      the driver's own runtime selection (`libventus_driver.so`)
+DRIVERS = {
+    "spike": "libspike_driver.so",
+    "cyclesim": "libcyclesim_driver.so",
+    "rtlsim": "librtlsim_driver.so",
+    "gvm": "libgvm_driver.so",
+    "auto": "libauto_select_driver.so",
+}
+DEFAULT_DRIVER = "spike"
+# Retained for callers that bind to the module-level default directly.
+DRIVER_SO = INSTALL / "lib" / DRIVERS[DEFAULT_DRIVER]
+
+# The cycle simulator keeps its timing state in its own library. Every device's
+# `vt_dump_perf` is a no-op (`return 0` in spike/cyclesim/rtlsim/gvm), so the
+# simulated time is read through the simulator's C API instead; a simulated
+# clock period of 10 ns follows from `cyclesim/src/parameters.h:42`.
+CYCLESIM_SO = INSTALL / "lib" / "libVentusCycleSim.so"
+# `ventus_cyclesim_init` calls `sc_set_time_resolution`, and SystemC refuses a
+# second simulation in one process: "(E514) set time resolution failed:
+# simulation running", followed by an abort. One cyclesim launch per process is
+# therefore a hard constraint, enforced below with a Python error rather than a
+# SIGABRT from inside the model. The flag lives on `sys` because the backend
+# discovery tests purge `triton.backends.ventus.*` from `sys.modules` (which
+# would reset a module global while the SystemC context would survive).
+_CYCLESIM_OPENED_ATTR = "_triton_ventus_cyclesim_opened"
 
 # Kernel metadata buffer layout (device words), see libclc ventus.h:
 KNL_ENTRY = 0
@@ -130,6 +164,16 @@ BUILTIN_PROFILES = {
 
 
 class _MetaData(ctypes.Structure):
+    """`driver_metadata_t` as the device drivers declare it.
+
+    spike/gvm/rtlsim end at `pdsBaseAddr`; cyclesim appends a `kernel_name`
+    pointer that it turns into a `std::string` for its task/kernel names. Left
+    unset, that field is whatever follows the struct in memory, which cyclesim
+    reads: the name came out as garbage, and a null one aborted the model with
+    `basic_string: construction from null is not valid`. Passing a longer struct
+    is harmless to the drivers that stop earlier.
+    """
+
     _fields_ = [
         ("kernel_id", ctypes.c_uint64),
         ("kernel_size", ctypes.c_uint64 * 3),
@@ -141,6 +185,7 @@ class _MetaData(ctypes.Structure):
         ("sgprUsage", ctypes.c_uint64),
         ("vgprUsage", ctypes.c_uint64),
         ("pdsBaseAddr", ctypes.c_uint64),
+        ("kernel_name", ctypes.c_char_p),
     ]
 
 
@@ -148,6 +193,13 @@ class _Driver:
     """ctypes binding to the Ventus spike device driver shared object."""
 
     def __init__(self, so: Path):
+        if so.name == DRIVERS["cyclesim"]:
+            if getattr(sys, _CYCLESIM_OPENED_ATTR, False):
+                raise RuntimeError(
+                    "the cycle simulator can only be opened once per process "
+                    "(SystemC rejects a second simulation); run each cyclesim "
+                    "launch in its own process")
+            setattr(sys, _CYCLESIM_OPENED_ATTR, True)
         self.lib = ctypes.CDLL(str(so))
         self.dev = ctypes.c_void_p()
         f = self.lib
@@ -214,11 +266,35 @@ class _Driver:
     def launch(self, metadata, timeout_s: int = 120):
         if self.lib.vt_start(self.dev, ctypes.byref(metadata), 0) != 0:
             raise RuntimeError("vt_start failed")
+        # The cyclesim device ignores this timeout (`(void)timeout;` in
+        # cyclesim_device/ventus.cpp) and spins until the model goes idle, so a
+        # launch that never idles cannot be bounded from here -- cap it
+        # externally. spike honours the value.
         if self.lib.vt_ready_wait(self.dev, timeout_s * 1000) != 0:
             raise RuntimeError("vt_ready_wait failed")
 
     def close(self):
         self.lib.vt_dev_close(self.dev)
+
+
+class _CyclesimTime:
+    """Read `ventus_cyclesim_get_time()` for the handle a driver opened.
+
+    `vt_dev_open` in `cyclesim_device/ventus.cpp` stores exactly the
+    `ventus_cyclesim_t *` that `ventus_cyclesim_init` returned, and that is what
+    `vt_ready_wait`/`ventus_cyclesim_get_time` take. The driver loads the
+    simulator by absolute path, so dlopening the same path here yields the same
+    already-loaded instance and the same handle stays valid.
+    """
+
+    def __init__(self, so: Path = CYCLESIM_SO):
+        self.lib = ctypes.CDLL(str(so))
+        self.lib.ventus_cyclesim_get_time.argtypes = [ctypes.c_void_p]
+        self.lib.ventus_cyclesim_get_time.restype = ctypes.c_uint64
+
+    def ns(self, dev) -> int:
+        """Simulated time at this instant, in nanoseconds of model time."""
+        return int(self.lib.ventus_cyclesim_get_time(dev))
 
 
 @dataclass
@@ -243,11 +319,16 @@ class LaunchSpec:
     # so any elementwise-add kernel that covers [0, n) qualifies -- 1-D or a
     # 2-D tile whose flattened offsets cover the same range.
     kernel_name: str = "vector_add_kernel"
+    driver: str = DEFAULT_DRIVER      # device driver, see DRIVERS
 
     def __post_init__(self):
         self.elf = Path(self.elf)
         if not self.elf.is_file():
             raise FileNotFoundError(self.elf)
+        if self.driver not in DRIVERS:
+            raise ValueError(
+                f"unknown driver {self.driver!r}; expected one of "
+                f"{sorted(DRIVERS)}")
         if self.profile not in LAUNCH_PROFILE_VOCABULARY:
             raise ValueError(
                 f"unknown launch profile {self.profile!r}; "
@@ -373,7 +454,7 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
     lds = max(resources.get("lds", spec.lds), profile.lds_size)
     pds = max(resources.get("pds", spec.pds), profile.pds_size)
 
-    driver = _Driver(DRIVER_SO)
+    driver = _Driver(INSTALL / "lib" / DRIVERS[spec.driver])
     # Spike's driver formats the ELF path into fixed-size buffers, so a
     # Triton cache path or a pytest tmp_path overflows it; stage at a short
     # path. Log collection happens after the launch (see below).
@@ -404,12 +485,18 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
         struct.pack_into("<I", knl, KNL_LC_SIZE_Z, 1)
         knla = driver.alloc(KNL_MAX_METADATA_SIZE)
         driver.to_dev(knla, knl)
-        # spike_device::run hard-codes the private segment at 0x10000000 per
-        # work-group, independent of the metadata value; POCL mirrors this
-        # (see pocl_ventus.cc "pdssize setting to 0x10000000"). The page is
-        # allocated lazily by spike; the exact size only needs to satisfy the
-        # driver's alignment checks.
-        pds_addr = driver.alloc(0x1000 * max(32, spec.num_warps))
+        # Private memory (PDS) is a per-work-item size in the metadata but a
+        # per-launch range in the address space: the documented convention is
+        #     pdsSize * wf_size * wg_size * grid
+        # starting at `pdsBaseAddr` (cyclesim/src/task.cpp sizes that range and
+        # then asserts it was allocated exactly; the hardware gives each
+        # work-group its own CSR_PDS offset derived from it). spike ignores the
+        # address entirely -- spike_device::run hard-codes a 0x10000000 segment
+        # per work-group, which POCL mirrors -- so sizing this for a single
+        # work-group is invisible there and only showed up when the grid of a
+        # launch grew beyond one.
+        pds_addr = driver.alloc(pds * profile.lanes_per_warp *
+                                profile.warps_per_workgroup * grid)
 
         md = _MetaData()
         md.kernel_id = 0
@@ -424,11 +511,16 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
         md.sgprUsage = resources.get("sgpr", spec.sgpr)
         md.vgprUsage = resources.get("vgpr", spec.vgpr)
         md.pdsBaseAddr = pds_addr
+        md.kernel_name = spec.kernel_name.encode()
 
         t0 = time.monotonic()
         driver.upload(staged)
         driver.launch(md, timeout_s=spec.timeout_s)
         elapsed = time.monotonic() - t0
+        # Read the simulated time before closing the device: the handle is the
+        # simulator instance (see _CyclesimTime).
+        simulated_ns = (_CyclesimTime().ns(driver.dev)
+                        if spec.driver == "cyclesim" else None)
         z = struct.unpack(f"{n}f", driver.from_dev(za, nb))
     finally:
         driver.close()
@@ -461,6 +553,10 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
         "staged_elf": str(staged),
         "resource_record": resources,
         "elapsed_s": round(elapsed, 4),
+        # Which device produced this result: the functional answer comes from
+        # any driver, the timing answer only from cyclesim.
+        "driver": spec.driver,
+        "simulated_time_ns": simulated_ns,
         "num_mismatches": len(mismatches),
         "first_mismatches": mismatches[:8],
         "z_first8": z[:8],
@@ -486,11 +582,12 @@ def main():
     ap.add_argument("--local", type=int, default=32)
     ap.add_argument("--profile", default="v1-32",
                     choices=sorted(BUILTIN_PROFILES))
+    ap.add_argument("--driver", default=DEFAULT_DRIVER, choices=sorted(DRIVERS))
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
     spec = LaunchSpec(elf=args.elf, n_elements=args.n, local_size=args.local,
-                      profile=args.profile)
+                      profile=args.profile, driver=args.driver)
     result = run_vector_add(spec)
     print(json.dumps(result, indent=2))
     ok = result["num_mismatches"] == 0

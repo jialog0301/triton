@@ -292,6 +292,35 @@ def test_vector_add_spike_exact_multiple(ventus_backend, monkeypatch,
     assert result["num_mismatches"] == 0
 
 
+def test_vector_add_on_cyclesim(ventus_backend, monkeypatch, tmp_path):
+    """The cycle-level driver runs the same ELF and reports model time.
+
+    spike is functional-only, so the installed `libcyclesim_driver.so` is the
+    timing source of truth; the measurement loop has to close there. Two things
+    the functional driver hides are exercised by this launch: cyclesim sizes
+    private memory over the whole grid at `pdsBaseAddr` (spike gives each
+    work-group a fixed segment and ignores the address), and it reads a trailing
+    `kernel_name` field that spike's metadata struct does not have. Both were
+    wrong before, and both are invisible with grid=1.
+
+    One cyclesim launch per process: SystemC refuses a second simulation, so the
+    launcher raises rather than letting the model abort. That makes this the only
+    cyclesim launch in the suite.
+    """
+    _compile_vector_add(monkeypatch, tmp_path)
+    elf_path = _stage_file(tmp_path / "cache", ".elf")
+    launcher = importlib.import_module("triton.backends.ventus.launcher")
+    result = launcher.run_vector_add(
+        launcher.LaunchSpec(elf=elf_path, n_elements=100, local_size=32,
+                            driver="cyclesim"))
+    assert result["driver"] == "cyclesim"
+    assert result["grid"] == 4
+    assert result["num_mismatches"] == 0
+    # Model time, not host time: it comes from the simulator's own clock, so it
+    # cannot be zero for a kernel that ran.
+    assert result["simulated_time_ns"] > 0
+
+
 def test_2d_tile_vector_add_on_spike(ventus_backend, monkeypatch, tmp_path):
     """A rank-2 tile compiles and executes on Spike.
 
