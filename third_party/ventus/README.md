@@ -32,43 +32,48 @@ MLIR/LLVM 下降低源，`toolchain/` 记录工具链身份与边界事实，`re
 固定链接输入：`crt0.o`（提供 `_start`）、`riscv32clc.o`（work-item 内建）、`libworkitem.a`、
 `ldscripts/ventus/elf32lriscv.ld`，全部按绝对路径调用。
 
-### 2.1 本地核心前移（cherry-picked upstream commits）
+### 2.1 与上游的关系（已 rebase 到 origin/main）
 
-本地 `main` 停在 `310241f824`，而 `origin/main` 已前进 263 个提交。为拿到直接相关的布局接口能力，
-已在 `feature/triton-ventus-v1` 上 cherry-pick 了 3 个上游提交（`main` 未动）：
+`feature/triton-ventus-v1` 已 **rebase 到 `origin/main`**：`0 落后 / 4 领先`，我们的 4 个提交
+直接坐在最新上游之上。`main` 分支仍停在旧的 `af6b189cf5`（按既有习惯不动它）。
 
-| 提交 | 内容 | 对我们的意义 |
+rebase **零 git 冲突**——我们与上游的文件交集只有 `.gitignore`、`AGENTS.md`、`CMakeLists.txt`，
+且多为纯追加。此前用 cherry-pick 试过的 3 个提交在 rebase 时被 git 自动识别为"已应用"并跳过，
+印证了 patch 等价的判断。
+
+由此一次拿到了先前**无法单独 cherry-pick** 的两条布局修复：
+
+| 提交 | 内容 | 为什么单独 pick 拿不到 |
 |---|---|---|
-| `7a7f10458e` | `[LAYOUTS] Dispatch dot-operand lowering through MmaEncodingTrait` (#11025) | P5 的 MMA 编码接口契约（见第 6 节） |
-| `a70115aa99` | `[LAYOUTS] Dispatch shared-layout lowering through SharedEncodingTrait` (#11764) | P2 的 LDS 编码可走接口，不必硬编码 |
-| `12fa7984ca` | `[OptimizeThreadLocality] Handle multi-use thread locality results` (#11682) | 布局优化正确性 |
+| `92ff4362da` | Fix operand layouts when absorbing view conversions (#11758) | 依赖中途重构（`canUseResultEncoding` 返回值由 `bool` 变为 `std::optional<SmallVector<OpOperand *>>`） |
+| `51593ac6b6` | Relax broadcast layouts (#11759) | 给 `DialectInferLayoutInterface` 加方法，牵动 NVIDIA/AMD/Gluon 三份实现 |
 
-三者都只改核心 dialect/transform 文件，改动量小（5–11 个文件），与我们自己的改动零冲突
-（我们与上游的文件交集只有 `.gitignore`/`AGENTS.md`/`CMakeLists.txt`）。构建通过，26/26 测试全绿。
+#### rebase 暴露了 git 看不见的破坏面
 
-**未取的同类提交**：`92ff4362da`（Fix operand layouts when absorbing view conversions）与
-`51593ac6b6`（Relax broadcast layouts）**无法独立 cherry-pick**——它们依赖中途的上游重构
-（例如 `canUseResultEncoding` 的返回值由 `bool` 变为 `std::optional<SmallVector<OpOperand *>>`，
-并新增 `canBeRematerialized`）。强行应用等于在旧 API 上手工移植语义，属"静默算错"风险区；
-要它们应走**整体 rebase**（已知冲突面同样只有 3 个文件）。
+git 层面零冲突，但**编译时**我们的 `TritonGPUToLLVM.cpp` 撞上两处核心 API 变更：
 
-这些 cherry-pick 与上游 patch 等价，将来 rebase 到 `origin/main` 时 git 会自动识别并跳过，
-不会二次冲突。代价是核心 dialect 处于"部分新、部分旧"的混合态。
+| 变更 | 来源 | 我们的修法 |
+|---|---|---|
+| `TargetInfoBase::getMulhiFuncName` 被删除 | `0f77b09309 [GPU] Expose unsigned mulhi to LLVM optimization` (#11768) | 删掉该 override |
+| `populateElementwiseOpToLLVMPatterns` 去掉 `targetInfo` 参数 | 同期 elementwise 重构 | 调用处去掉该实参 |
 
-**判断某个上游提交能否单独 cherry-pick 的规则**——先数"中间漂移"：
+**结论：git 冲突 ≠ 破坏面。** 我们对核心 API 的使用（`TargetInfoBase` override、`populate*`
+签名、`packLLElements` 等）只在编译时才暴露漂移，所以每次升级都必须**构建 + 跑全套测试**，
+不能只看 rebase 是否干净。
+
+#### 若只想要上游某个提交：先数"中间漂移"
 
 ```bash
 git log --oneline <我们的基点>..<目标提交>^ -- <该补丁触及的文件>
 ```
 
-为 0 才有资格单独 pick；不为 0 说明补丁期望的行上下文已被上游改动，冲突**与自己的改动无关**
-（我们根本没碰那些文件）。实测：`7a7f10458e` 触及的 5 个文件漂移 0 次 → 干净；`51593ac6b6` 的
-11 个文件漂移 1–11 次 → 必冲突。
+为 0 才有资格单独 cherry-pick；不为 0 说明补丁期望的行上下文已被上游改动，冲突**与自己的改动
+无关**（我们根本没碰那些文件）。实测：`7a7f10458e` 触及的 5 个文件漂移 0 次 → 干净；
+`51593ac6b6` 的 11 个文件漂移 1–11 次 → 必冲突，只能走 rebase。
 
 **两种操作的冲突面方向相反**：cherry-pick 的冲突大小正比于"补丁文件在中间被上游改动的次数"
-（我们无法控制，`Utility.cpp` 5 次、`RemoveLayoutConversions.cpp` 10 次即为例证）；而 rebase 的
-冲突面是"我们改过的文件 ∩ 上游改过的文件"，我们只有 3 个（`.gitignore`、`AGENTS.md`、
-`CMakeLists.txt`，且多为纯追加）。因此**要取上游 core 里的东西，rebase 才是正路**。
+（我们无法控制）；rebase 的冲突面是"我们改过的文件 ∩ 上游改过的文件"，我们只有 3 个。
+**因此要取上游 core 里的东西，rebase 才是正路。**
 
 ## 3. 关键实现决策（含理由）
 

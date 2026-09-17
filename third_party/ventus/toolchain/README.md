@@ -73,27 +73,29 @@ cross this boundary. V1 lowers a masked access to an `llvm.cond_br` diamond with
 the loaded value and the `other` operand meeting in the join block. Vectorized
 masked accesses remain a later optimization.
 
-## Local Core Advance
+## Upstream Rebase
 
-The Triton source tree in this worktree has been advanced past its base commit
-`310241f824` by cherry-picking selected upstream commits, rather than rebasing
-onto `origin/main` (which is 263 commits ahead). Each cherry-pick is
-patch-equivalent to upstream, so a future rebase drops them automatically:
+This worktree's Triton source tree has been **rebased onto `origin/main`** and now
+sits 4 commits ahead of it (0 behind); the previous base was `310241f824`. The
+local `main` branch was deliberately left where it was.
 
-| Commit | Subject |
-|---|---|
-| `7a7f10458e` | `[LAYOUTS] Dispatch dot-operand lowering through MmaEncodingTrait` (#11025) |
-| `a70115aa99` | `[LAYOUTS] Dispatch shared-layout lowering through SharedEncodingTrait` (#11764) |
-| `12fa7984ca` | `[OptimizeThreadLocality] Handle multi-use thread locality results` (#11682) |
+The rebase was conflict-free at the git level: the only files both sides touched
+are `.gitignore`, `AGENTS.md`, and `CMakeLists.txt`, mostly additive. Two upstream
+layout fixes that could **not** be cherry-picked individually — because they
+depend on intervening refactors — came in with it: `92ff4362da` (fix operand
+layouts when absorbing view conversions) and `51593ac6b6` (relax broadcast
+layouts).
 
-This advance does **not** change the LLVM/MLIR revision consumed by Triton (still
-`b010a18d2b648cab83c83967ff26b8fde11acdc6`, build 1) and therefore does not affect
-the Tasks 4-7 gate below. `version.json` records the resulting `triton_commit`,
-worktree content hash, and `libtriton` hash.
+Conflict-free git history is **not** evidence of a working tree. Two core APIs our
+backend consumes had changed and were fixed as part of the rebase:
+`TargetInfoBase::getMulhiFuncName` was removed, and
+`populateElementwiseOpToLLVMPatterns` lost its `targetInfo` parameter. Every
+upgrade therefore needs a build plus the full test suite, not just a clean rebase.
 
-Commits that depend on intervening upstream refactors are deliberately **not**
-cherry-picked (`92ff4362da`, `51593ac6b6`); see `third_party/ventus/README.md`
-section 2.1.
+The LLVM/MLIR revision consumed by Triton is **unchanged** (still
+`b010a18d2b648cab83c83967ff26b8fde11acdc6`, build 1), so the Tasks 4-7 gate below
+is unaffected. `version.json` records the resulting `triton_commit`, worktree
+content hash, and `libtriton` hash.
 
 ## Conditional Shared-Library Tasks
 

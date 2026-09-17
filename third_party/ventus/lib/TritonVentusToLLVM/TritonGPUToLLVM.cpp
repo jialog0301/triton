@@ -166,10 +166,6 @@ public:
     return false;
   }
 
-  std::string getMulhiFuncName(Type) const override {
-    unsupported("mulhi helper");
-  }
-
   void printf(RewriterBase &, Value, int, ValueRange,
               ArrayRef<bool>) const override {
     unsupported("device printf");
@@ -337,7 +333,7 @@ struct ConvertTritonGPUToVentusLLVM
       ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
       const int benefit = patternBenefitPrioritizeOverLLVMConversions;
       mlir::triton::populateElementwiseOpToLLVMPatterns(
-          typeConverter, patterns, axisInfoAnalysis, targetInfo, benefit);
+          typeConverter, patterns, axisInfoAnalysis, benefit);
       mlir::triton::populateMemoryOpToLLVMPatterns(typeConverter, targetInfo,
                                                    patterns, benefit);
       // Global tt.load/tt.store: backend-owned in Triton, see the V1
