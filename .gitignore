@@ -107,3 +107,8 @@ docs/sg_execution_times.rst
 .DS_Store
 
 AGENTS.override.md
+
+# Ventus OpenCL comparison arm (built by tools/vecadd_baseline/measure.py)
+third_party/ventus/tools/vecadd_baseline/vecadd_baseline
+third_party/ventus/tools/vecadd_baseline/object0.*
+third_party/ventus/tools/vecadd_baseline/vecadd_0.*

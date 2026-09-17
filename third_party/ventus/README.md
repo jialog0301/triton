@@ -195,6 +195,40 @@ rtlsim 也是**一进程一次**：第二次 `vt_dev_open` 因 driver 里
 `test_vector_add_on_cyclesim` / `test_vector_add_on_rtl` 两个小测试，只用于守护驱动接线本身
 （各 ~0.2 s）；功能正确性的权威仍是 spike。
 
+### 4.3 跨实现对照：Triton vs OpenCL（2026-09-17 建立）
+
+工具：`tools/vecadd_baseline/`（`kernel.cl` + `main.cc` 主机程序 + `measure.py` 双臂驱动器）。
+两臂跑**同一形状、同一模拟器**：n 个元素、`local` 个 work-item 一个 work-group、
+`ceil(n/local)` 个 work-group、尾部用 `gid < n` 兜住；输入同为 `a[i]=i+1`、`b[i]=2i`。
+OpenCL 臂经 POCL 的 ventus device 走 `libventus_driver.so`（auto_select），因此
+`VENTUS_BACKEND` 与 Triton 臂选同一个模拟器（`spike`/`cyclesim`/`rtlsim`）：
+
+```bash
+# POCL 的调用约定与 rodinia 的 runner 一致
+PATH=$V/bin:$PATH LD_LIBRARY_PATH=$V/lib OCL_ICD_VENDORS=$V/lib/libpocl.so \
+POCL_DEVICES=ventus VENTUS_BACKEND=cyclesim ./vecadd_baseline kernel.cl 1024 32
+
+# 一次跑两臂（各自一个进程，见下）
+.venv/bin/python third_party/ventus/tools/vecadd_baseline/measure.py --n 1024 --local 32 --backend cyclesim
+```
+
+**首个数字**（n=1024、local=32、grid=32，两臂 `num_mismatches=0`）：
+
+| 臂 | 模拟器 | 内核模型时间 | 折算 cycles（10 ns/cycle） |
+|---|---|---|---|
+| Triton | cyclesim | 183015 ns | 18301.5 |
+| OpenCL (POCL) | cyclesim | 181465 ns | 18146.5 |
+| Triton / OpenCL | spike（仅功能） | — | 两臂均通过 |
+
+差 1550 ns（≈0.85%），**但这个差目前不能当"代码质量差异"**——两臂的驱动侧资源声明不同：
+POCL 在 `pocl_ventus.cc` 里硬编码 `ldssize=0x1000`、`pdssize=0x10000000` 等，而我们的 launcher
+用产物里的 VRES 记录（vgpr=7、sgpr=8）并把 pds 按 grid 摊开。要做**受控对照**，必须先把
+`pdsSize`/`ldsSize`/`sgprUsage`/`vgprUsage` 在两臂对齐（我们这边可用 `LaunchSpec` 的同名字段覆盖），
+而这正对应 `version.json` 里 `hard_coded_resource_consumption_present` 那条 release blocker。
+
+其余限制：spike 只做功能、没有 cycle 数；RTL 覆盖不了 grid=32（§4.2 的 grid ≤ num_sm=2）；两臂各自的
+"总模拟时间"窗口不同（`measure.py` 因此统一取模拟器日志里的 `initialized→finished` 内核窗口）。
+
 ## 5. 与 NVIDIA / AMD 的 pass 对照（MMA 视角）
 
 核心的 `accelerate-matmul` 是 NVIDIA 专属（`AccelerateMatmul.cpp` 只有 `getMMAVersionSafe` 与
@@ -306,7 +340,7 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
 
 | 序 | 内容 | 依赖 | 论文价值 |
 |---|---|---|---|
-| **P0** | 测量闭环：~~驱动可选 + cycle 级数字~~（已完成：spike/cyclesim/rtlsim/gvm/auto + `simulated_time_ns`，见 §4.1）；**还差**：OpenCL(POCL) 基线数字（`ventus-env/pocl` 的 ventus device + `install/lib/libpocl.so` 已在位）。*已降级*：RTL 多波分发修复、cyclesim↔RTL 模型校准——验证路径已定 spike（§4.1），这两项等 P1 需要可引用的 RTL 数字时再做 | — | 使后续所有结论可证 |
+| **P0** | 测量闭环：~~驱动可选 + cycle 级数字~~（§4.1）、~~OpenCL(POCL) 基线~~（§4.3 已建立，首个受控数字待补：先对齐两臂的资源声明）。*已降级*：RTL 多波分发、cyclesim↔RTL 模型校准——验证路径已定 spike（§4.1） | — | 使后续所有结论可证 |
 | **P1** | 布局/向量化/占用率：~~LinearLayout 化索引~~（已完成，见第 6 节）、`sizePerThread`、`num_warps`、coalesce；去除逐元素标量访存 | — | "Triton 生成 vs OpenCL/手写"主结果 |
 | **P2** | LDS + barrier：`add_allocate_shared_memory` + membar + 实现 `storeDShared`/`loadDShared`；barrier 走文本注入或 inline asm | 核心基建已备 | 支撑 tiling/reduction/MMA |
 | **P3** | 分歧硬件（`vbranch`/`join`/掩码栈）与现有软件谓词路径做 A/B | 工具链（新内建/CC） | **论文核心差异化**（软件谓词一臂已实现） |
