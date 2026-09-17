@@ -73,6 +73,28 @@ cross this boundary. V1 lowers a masked access to an `llvm.cond_br` diamond with
 the loaded value and the `other` operand meeting in the join block. Vectorized
 masked accesses remain a later optimization.
 
+## Local Core Advance
+
+The Triton source tree in this worktree has been advanced past its base commit
+`310241f824` by cherry-picking selected upstream commits, rather than rebasing
+onto `origin/main` (which is 263 commits ahead). Each cherry-pick is
+patch-equivalent to upstream, so a future rebase drops them automatically:
+
+| Commit | Subject |
+|---|---|
+| `7a7f10458e` | `[LAYOUTS] Dispatch dot-operand lowering through MmaEncodingTrait` (#11025) |
+| `a70115aa99` | `[LAYOUTS] Dispatch shared-layout lowering through SharedEncodingTrait` (#11764) |
+| `12fa7984ca` | `[OptimizeThreadLocality] Handle multi-use thread locality results` (#11682) |
+
+This advance does **not** change the LLVM/MLIR revision consumed by Triton (still
+`b010a18d2b648cab83c83967ff26b8fde11acdc6`, build 1) and therefore does not affect
+the Tasks 4-7 gate below. `version.json` records the resulting `triton_commit`,
+worktree content hash, and `libtriton` hash.
+
+Commits that depend on intervening upstream refactors are deliberately **not**
+cherry-picked (`92ff4362da`, `51593ac6b6`); see `third_party/ventus/README.md`
+section 2.1.
+
 ## Conditional Shared-Library Tasks
 
 Implementation-plan Tasks 4-7 are deferred. Triton consumes LLVM/MLIR revision
