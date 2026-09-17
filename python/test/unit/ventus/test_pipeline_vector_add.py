@@ -321,6 +321,36 @@ def test_vector_add_on_cyclesim(ventus_backend, monkeypatch, tmp_path):
     assert result["simulated_time_ns"] > 0
 
 
+def test_vector_add_on_rtl(ventus_backend, monkeypatch, tmp_path):
+    """The Verilator RTL model runs the same ELF and reports model time.
+
+    This is the hardware description itself, so it is the ground truth the
+    SystemC cycle model is calibrated against. The installed model is the
+    `nocache` variant (L1 D-cache and L2 removed), which is why its cycle count
+    is not directly a cache-accurate number.
+
+    The grid is limited to the RTL's SM count: `gpgpu/ventus/src/top/parameters.scala`
+    declares `num_sm = 2`, and a grid beyond one wave aborts inside the model
+    (`Assertion failed: UNDEFINED INSTRUCTION @ SM 0 warp 1 PC 0x90004000`) --
+    the third work-group starts at the metadata buffer instead of the kernel
+    entry. n=64 is therefore the largest shape that runs today: grid=2, every
+    lane active.
+
+    Like cyclesim, the rtlsim driver can only be opened once per process, so this
+    is the only RTL launch in the suite.
+    """
+    _compile_vector_add(monkeypatch, tmp_path)
+    elf_path = _stage_file(tmp_path / "cache", ".elf")
+    launcher = importlib.import_module("triton.backends.ventus.launcher")
+    result = launcher.run_vector_add(
+        launcher.LaunchSpec(elf=elf_path, n_elements=64, local_size=32,
+                            driver="rtlsim"))
+    assert result["driver"] == "rtlsim"
+    assert result["grid"] == 2
+    assert result["num_mismatches"] == 0
+    assert result["simulated_time_ns"] > 0
+
+
 def test_2d_tile_vector_add_on_spike(ventus_backend, monkeypatch, tmp_path):
     """A rank-2 tile compiles and executes on Spike.
 

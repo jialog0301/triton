@@ -153,6 +153,39 @@ grid>1 时构造 `std::string` 直接 abort）。
 `(E514) ... simulation running` 并终止进程。launcher 用 `sys` 上的进程级标志提前抛 Python 异常
 （模块级全局会被后端发现测试的清 `sys.modules` 重置），因此测试里只有一次 cyclesim 启动。
 
+### 4.2 RTL 模型（Verilator）当前能跑到什么程度（2026-09-17 实测）
+
+`driver="rtlsim"` 走同一套 `vt_*` API，模型时间同法可读（`ventus_rtlsim_get_time`）。单位同样是
+**ns**：Verilator 无 `timescale` 指令、用默认 1 ns timeunit，`HALF_CYCLE_TIME = 5`
+（`ventus_rtlsim_impl.cpp:27`）→ 10 ns/cycle，与 cyclesim 的时钟一致。
+
+同一 ELF（vector_add，`num_warps=1`）实测：
+
+| grid | 结果 | wall |
+|---|---|---|
+| 1 | 通过，`mismatches=0`，模型时间 34075（内核 finish @9075） | 0.2 s |
+| 2 | 通过，`mismatches=0` | 0.2 s |
+| 3 / 4 | **abort**：`Assertion failed: UNDEFINED INSTRUCTION @ SM 0 warp 1 PC 0x90004000` | — |
+
+grid=3/4 的失败是**多波分发**问题：第 3 个 work-group 从 metadata 缓冲区地址（`CSR_KNL`）开始取指，
+而 RTL 的 `num_sm = 2`（`gpgpu/ventus/src/top/parameters.scala:7`），一波只放得下 2 个 CTA。
+**所以 RTL 目前的可跑上限是 grid ≤ 2**，我们现有测试用的 grid=4 形状还跑不了。
+
+**关键是这份 RTL 是 nocache 变体**：`gpgpu/sim-verilator-nocache` 去掉了 L1 D-cache 与 L2
+（保留 L1 I-cache，日志自报 "you are running no-cache version RTL"）。因此"谁更接近真实硬件"要分轴：
+
+| 轴 | 更保真 | 说明 |
+|---|---|---|
+| 核心微架构（流水线、warp 调度、寄存器/记分牌、分歧） | **RTL** | 硬件描述本体；cyclesim 是 SystemC 性能模型 |
+| 内存层级（L1D/L2/DRAM 计时） | **cyclesim** | 带 ramulator；装着的 RTL 去掉了 cache。缓存版 `gpgpu/sim-verilator/` 在树里，但**没有**装成 `libVentusRTL.so` |
+
+**数字不可直接比**：RTL 报的是"内核 finish + 仿真收尾"，cyclesim 报的是自身结束时刻，同一 kernel
+RTL 9075 ns vs cyclesim 15830 ns 不能当模型偏差——要得到模型校准结论，必须先统一测量窗口
+（内核 start→finish）。这是 P0 的下一项。
+
+rtlsim 也是**一进程一次**：第二次 `vt_dev_open` 因 driver 里
+`spdlog::stdout_color_mt("ventus")` 重复注册而 `terminate`（driver 侧一行可修：已存在就取旧的）。
+
 ## 5. 与 NVIDIA / AMD 的 pass 对照（MMA 视角）
 
 核心的 `accelerate-matmul` 是 NVIDIA 专属（`AccelerateMatmul.cpp` 只有 `getMMAVersionSafe` 与
@@ -264,7 +297,7 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
 
 | 序 | 内容 | 依赖 | 论文价值 |
 |---|---|---|---|
-| **P0** | 测量闭环：~~`launcher.py` 的 `DRIVER_SO` 改为可选驱动~~（已完成：spike/cyclesim/rtlsim/gvm/auto + `simulated_time_ns`，见 §4.1）；**还差**：OpenCL(POCL) 基线数字（`ventus-env/pocl` 的 ventus device + `install/lib/libpocl.so` 已在位） | — | 使后续所有结论可证 |
+| **P0** | 测量闭环：~~驱动可选 + cycle 级数字~~（已完成：spike/cyclesim/rtlsim/gvm/auto + `simulated_time_ns`，见 §4.1）；**还差**：① 统一测量窗口做 cyclesim↔RTL 模型校准（§4.2）；② RTL 多波分发（grid>2 现在 abort）；③ OpenCL(POCL) 基线数字（`ventus-env/pocl` 的 ventus device + `install/lib/libpocl.so` 已在位） | ② 若在 driver/RTL 侧，属工具链改动 | 使后续所有结论可证 |
 | **P1** | 布局/向量化/占用率：~~LinearLayout 化索引~~（已完成，见第 6 节）、`sizePerThread`、`num_warps`、coalesce；去除逐元素标量访存 | — | "Triton 生成 vs OpenCL/手写"主结果 |
 | **P2** | LDS + barrier：`add_allocate_shared_memory` + membar + 实现 `storeDShared`/`loadDShared`；barrier 走文本注入或 inline asm | 核心基建已备 | 支撑 tiling/reduction/MMA |
 | **P3** | 分歧硬件（`vbranch`/`join`/掩码栈）与现有软件谓词路径做 A/B | 工具链（新内建/CC） | **论文核心差异化**（软件谓词一臂已实现） |
@@ -296,6 +329,14 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
   `basic_string: construction from null is not valid` abort。launcher 的 `_MetaData` 按最长形态声明。
 - **cyclesim 一个进程只能跑一次**（SystemC 二次初始化：`(E514) set time resolution failed`），
   且驱动忽略 `vt_ready_wait` 的 timeout（`(void)timeout;`），失控的启动只能用外部超时兜住。
+- **rtlsim 同样一进程一次**，但原因是 driver 重复注册 spdlog logger（`logger with name 'ventus'
+  already exists` → terminate）。launcher 已提前抛异常。
+- **RTL 的 grid 上限 = `num_sm` = 2**：超过一波的 grid 会在模型内 abort
+  （`UNDEFINED INSTRUCTION ... PC 0x90004000`，第 3 个 work-group 从 metadata 缓冲区取指）。多波分发
+  修好之前，RTL 只能验证 grid ≤ 2 的形状。
+- **装着的 `libVentusRTL.so` 是 nocache 变体**（L1D/L2 被移除）。它的 cycle 数只代表核心微架构，
+  不能当 cache-accurate 的硬件性能数字；引用时须写明变体。
+- **不同模拟器的"总时间"窗口不同**（内核 finish 时刻 vs 仿真收尾），跨模拟器比数字前先统一窗口。
 - `version.json` 尚未纳入版本控制，新克隆会缺该文件（`VentusBackend.hash()` 与身份测试都依赖它）。
 
 ## 9. 未决 / 外部依赖

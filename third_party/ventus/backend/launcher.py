@@ -69,14 +69,26 @@ DRIVER_SO = INSTALL / "lib" / DRIVERS[DEFAULT_DRIVER]
 # simulated time is read through the simulator's C API instead; a simulated
 # clock period of 10 ns follows from `cyclesim/src/parameters.h:42`.
 CYCLESIM_SO = INSTALL / "lib" / "libVentusCycleSim.so"
-# `ventus_cyclesim_init` calls `sc_set_time_resolution`, and SystemC refuses a
-# second simulation in one process: "(E514) set time resolution failed:
-# simulation running", followed by an abort. One cyclesim launch per process is
-# therefore a hard constraint, enforced below with a Python error rather than a
-# SIGABRT from inside the model. The flag lives on `sys` because the backend
-# discovery tests purge `triton.backends.ventus.*` from `sys.modules` (which
-# would reset a module global while the SystemC context would survive).
-_CYCLESIM_OPENED_ATTR = "_triton_ventus_cyclesim_opened"
+# The Verilator model of the RTL. The installed build is the `nocache` variant
+# (`gpgpu/sim-verilator-nocache`: L1 D-cache and L2 removed, L1 I-cache kept,
+# log note "you are running no-cache version RTL"), so its memory-side timing is
+# not the cache-accurate configuration.
+RTL_SO = INSTALL / "lib" / "libVentusRTL.so"
+# Neither timing model can be re-opened in one process, for different reasons:
+#   cyclesim  `ventus_cyclesim_init` calls `sc_set_time_resolution`, and SystemC
+#             refuses a second simulation: "(E514) set time resolution failed:
+#             simulation running", then aborts.
+#   rtlsim    `vt_dev_open` re-registers its spdlog logger unconditionally:
+#             "logger with name 'ventus' already exists", then aborts.
+# Both are enforced below as Python errors instead of SIGABRTs from inside the
+# models. The flags live on `sys` because the backend discovery tests purge
+# `triton.backends.ventus.*` from `sys.modules`, which would reset module
+# globals while the loaded models would survive.
+_SINGLE_SHOT_DRIVERS = {
+    "cyclesim": "SystemC refuses a second simulation in one process",
+    "rtlsim": "the rtlsim driver re-registers its spdlog logger",
+}
+_OPENED_ATTR = "_triton_ventus_driver_opened"
 
 # Kernel metadata buffer layout (device words), see libclc ventus.h:
 KNL_ENTRY = 0
@@ -192,14 +204,15 @@ class _MetaData(ctypes.Structure):
 class _Driver:
     """ctypes binding to the Ventus spike device driver shared object."""
 
-    def __init__(self, so: Path):
-        if so.name == DRIVERS["cyclesim"]:
-            if getattr(sys, _CYCLESIM_OPENED_ATTR, False):
+    def __init__(self, so: Path, name: str = ""):
+        if name in _SINGLE_SHOT_DRIVERS:
+            opened = getattr(sys, _OPENED_ATTR, set())
+            if name in opened:
                 raise RuntimeError(
-                    "the cycle simulator can only be opened once per process "
-                    "(SystemC rejects a second simulation); run each cyclesim "
-                    "launch in its own process")
-            setattr(sys, _CYCLESIM_OPENED_ATTR, True)
+                    f"driver {name!r} can only be opened once per process: "
+                    f"{_SINGLE_SHOT_DRIVERS[name]}; run each such launch in "
+                    "its own process")
+            setattr(sys, _OPENED_ATTR, opened | {name})
         self.lib = ctypes.CDLL(str(so))
         self.dev = ctypes.c_void_p()
         f = self.lib
@@ -277,24 +290,39 @@ class _Driver:
         self.lib.vt_dev_close(self.dev)
 
 
-class _CyclesimTime:
-    """Read `ventus_cyclesim_get_time()` for the handle a driver opened.
+class _ModelTime:
+    """Read a simulator's model time for the handle the driver opened.
 
-    `vt_dev_open` in `cyclesim_device/ventus.cpp` stores exactly the
-    `ventus_cyclesim_t *` that `ventus_cyclesim_init` returned, and that is what
-    `vt_ready_wait`/`ventus_cyclesim_get_time` take. The driver loads the
+    `vt_dev_open` in the respective device stores exactly the pointer
+    `ventus_cyclesim_init`/`ventus_rtlsim_init` returned, and that is what the
+    device passes to the simulator's own `*_get_time`. The driver loads the
     simulator by absolute path, so dlopening the same path here yields the same
     already-loaded instance and the same handle stays valid.
+
+    Units are nanoseconds in both models: cyclesim sets
+    `sc_set_time_resolution(1, SC_NS)`, and Verilator's default (no `timescale`
+    directive in the model, no `--timescale` flag) is a 1 ns timeunit that
+    `contextp->time()` reports in. Both step the clock by 5 units per half cycle,
+    i.e. 10 ns per cycle.
     """
 
-    def __init__(self, so: Path = CYCLESIM_SO):
+    def __init__(self, so: Path, symbol: str):
         self.lib = ctypes.CDLL(str(so))
-        self.lib.ventus_cyclesim_get_time.argtypes = [ctypes.c_void_p]
-        self.lib.ventus_cyclesim_get_time.restype = ctypes.c_uint64
+        getter = getattr(self.lib, symbol)
+        getter.argtypes = [ctypes.c_void_p]
+        getter.restype = ctypes.c_uint64
+        self._getter = getter
 
     def ns(self, dev) -> int:
         """Simulated time at this instant, in nanoseconds of model time."""
-        return int(self.lib.ventus_cyclesim_get_time(dev))
+        return int(self._getter(dev))
+
+
+# Model time per driver: (simulator library, its time getter).
+MODEL_TIME = {
+    "cyclesim": (CYCLESIM_SO, "ventus_cyclesim_get_time"),
+    "rtlsim": (RTL_SO, "ventus_rtlsim_get_time"),
+}
 
 
 @dataclass
@@ -454,7 +482,7 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
     lds = max(resources.get("lds", spec.lds), profile.lds_size)
     pds = max(resources.get("pds", spec.pds), profile.pds_size)
 
-    driver = _Driver(INSTALL / "lib" / DRIVERS[spec.driver])
+    driver = _Driver(INSTALL / "lib" / DRIVERS[spec.driver], spec.driver)
     # Spike's driver formats the ELF path into fixed-size buffers, so a
     # Triton cache path or a pytest tmp_path overflows it; stage at a short
     # path. Log collection happens after the launch (see below).
@@ -518,9 +546,12 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
         driver.launch(md, timeout_s=spec.timeout_s)
         elapsed = time.monotonic() - t0
         # Read the simulated time before closing the device: the handle is the
-        # simulator instance (see _CyclesimTime).
-        simulated_ns = (_CyclesimTime().ns(driver.dev)
-                        if spec.driver == "cyclesim" else None)
+        # simulator instance (see _ModelTime).
+        if spec.driver in MODEL_TIME:
+            so, symbol = MODEL_TIME[spec.driver]
+            simulated_ns = _ModelTime(so, symbol).ns(driver.dev)
+        else:
+            simulated_ns = None
         z = struct.unpack(f"{n}f", driver.from_dev(za, nb))
     finally:
         driver.close()
