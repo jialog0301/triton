@@ -238,6 +238,11 @@ class LaunchSpec:
     timeout_s: int = 120
     keep_log: bool = False
     profile: str = "v1-32"           # named launch profile (see BUILTIN_PROFILES)
+    # Entry symbol to launch. The ABI below (x_ptr, y_ptr, z_ptr, n) and the
+    # `z[i] = x[i] + y[i]` reference are what the launcher actually requires,
+    # so any elementwise-add kernel that covers [0, n) qualifies -- 1-D or a
+    # 2-D tile whose flattened offsets cover the same range.
+    kernel_name: str = "vector_add_kernel"
 
     def __post_init__(self):
         self.elf = Path(self.elf)
@@ -356,8 +361,8 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
     local = profile.local_size_x
     grid = (n + local - 1) // local
     nb = n * 4
-    entry = _kernel_entry(spec.elf, "vector_add_kernel")
-    resources = _resource_record(spec.elf, "vector_add_kernel")
+    entry = _kernel_entry(spec.elf, spec.kernel_name)
+    resources = _resource_record(spec.elf, spec.kernel_name)
 
     # The compiled kernel's own resource record wins; the profile value is the
     # fallback for kernels without the section. LDS and PDS are floored at the
@@ -434,7 +439,7 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
                   if abs(got - exp) > 1e-6]
 
     result = {
-        "kernel": "vector_add_kernel",
+        "kernel": spec.kernel_name,
         "entry": hex(entry),
         "n": n,
         "local_size": local,

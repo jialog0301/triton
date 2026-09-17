@@ -40,6 +40,19 @@ def vector_add_kernel(x_ptr, y_ptr, z_ptr, n, BLOCK: tl.constexpr):
     tl.store(z_ptr + offs, x + y, mask=mask)
 
 
+@triton.jit
+def vector_add_2d_kernel(x_ptr, y_ptr, z_ptr, n, BLOCK_M: tl.constexpr,
+                         BLOCK_N: tl.constexpr):
+    pid = tl.program_id(0)
+    offs_m = pid * BLOCK_M + tl.arange(0, BLOCK_M)[:, None]
+    offs_n = tl.arange(0, BLOCK_N)[None, :]
+    offs = offs_m * BLOCK_N + offs_n
+    mask = offs < n
+    x = tl.load(x_ptr + offs, mask=mask)
+    y = tl.load(y_ptr + offs, mask=mask)
+    tl.store(z_ptr + offs, x + y, mask=mask)
+
+
 @pytest.fixture
 def ventus_backend(monkeypatch, tmp_path):
     isolated = tmp_path / "triton" / "backends"
@@ -65,14 +78,18 @@ def ventus_backend(monkeypatch, tmp_path):
 
 
 def _compile_vector_add(monkeypatch, tmp_path):
+    return _compile(vector_add_kernel, {"BLOCK": 32}, 1, monkeypatch, tmp_path)
+
+
+def _compile(fn, constexprs, num_warps, monkeypatch, tmp_path):
     monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path / "cache"))
     src = ASTSource(
-        fn=vector_add_kernel,
+        fn=fn,
         signature={"x_ptr": "*fp32", "y_ptr": "*fp32", "z_ptr": "*fp32",
                    "n": "i32"},
-        constexprs={"BLOCK": 32},
+        constexprs=constexprs,
     )
-    return triton_compile(src, target=TARGET, options={"num_warps": 1})
+    return triton_compile(src, target=TARGET, options={"num_warps": num_warps})
 
 
 def _stage_file(cache_dir: Path, suffix: str) -> Path:
@@ -272,4 +289,53 @@ def test_vector_add_spike_exact_multiple(ventus_backend, monkeypatch,
     result = launcher.run_vector_add(
         launcher.LaunchSpec(elf=elf_path, n_elements=32, local_size=32))
     assert result["grid"] == 1
+    assert result["num_mismatches"] == 0
+
+
+def test_2d_tile_vector_add_on_spike(ventus_backend, monkeypatch, tmp_path):
+    """A rank-2 tile compiles and executes on Spike.
+
+    Both `tl.arange` results are rank-1 tensors carrying a slice encoding of a
+    rank-2 blocked parent, so their per-thread offsets come from the parent
+    layout's dim-0 and dim-1 bases (order=[1, 0]) rather than from any 1-D
+    formula. A wrong mapping does not fail compilation, it writes wrong
+    values, so the assertion is the device result.
+    """
+    block_m, block_n, local_size = 4, 8, 32
+    # The launcher derives the grid from `n_elements` and `local_size`, so a
+    # tile of local_size elements per program is what keeps every offset
+    # covered exactly once.
+    assert block_m * block_n == local_size
+
+    _compile(vector_add_2d_kernel, {"BLOCK_M": block_m, "BLOCK_N": block_n}, 1,
+             monkeypatch, tmp_path)
+    elf_path = _stage_file(tmp_path / "cache", ".elf")
+    launcher = importlib.import_module("triton.backends.ventus.launcher")
+    result = launcher.run_vector_add(
+        launcher.LaunchSpec(elf=elf_path, n_elements=100,
+                            local_size=local_size,
+                            kernel_name="vector_add_2d_kernel"))
+    assert result["grid"] == 4
+    assert result["num_mismatches"] == 0
+
+
+def test_vector_add_two_warps_on_spike(ventus_backend, monkeypatch, tmp_path):
+    """num_warps=2 (the `v1-64` profile): the layout's warp basis.
+
+    With 64 elements per program and two warps, the element offset of a lane
+    depends on its warp id, not only on its lane id. A wrong warp basis makes
+    the second warp write the first warp's offsets; with every lane active
+    (N=128) that aliasing shows up as mismatched values. This is also the
+    first end-to-end use of the `v1-64` profile, which was declared but never
+    launched.
+    """
+    _compile(vector_add_kernel, {"BLOCK": 64}, 2, monkeypatch, tmp_path)
+    elf_path = _stage_file(tmp_path / "cache", ".elf")
+    launcher = importlib.import_module("triton.backends.ventus.launcher")
+    result = launcher.run_vector_add(
+        launcher.LaunchSpec(elf=elf_path, n_elements=128, local_size=64,
+                            num_warps=2, profile="v1-64"))
+    assert result["grid"] == 2
+    assert result["driver_wf_size"] == 32
+    assert result["driver_wg_size"] == 2
     assert result["num_mismatches"] == 0

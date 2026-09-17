@@ -1,5 +1,5 @@
-// V1 element lowering for the Ventus backend: global tt.load/tt.store,
-// tt.make_range, splat-like views and the floating-point elementwise set.
+// V1 element lowering for the Ventus backend: global tt.load/tt.store and the
+// floating-point elementwise set.
 //
 // Two facts about upstream Triton drive this file's shape:
 //  * Global tt.load/tt.store lowering is backend-owned (the core
@@ -8,7 +8,14 @@
 //  * The core elementwise registration covers the integer set only; every
 //    backend re-registers the floating-point ops.
 //
-// V1 lowers blocked-layout 1-D tensors element by element. Predicated
+// Index generation is NOT here: tt.make_range goes through the core
+// populateMakeRangeOpToLLVMPattern, i.e. ttg::toLinearLayout + emitIndices.
+// That is the same path NVIDIA and AMD use, so index generation is layout-
+// and rank-generic (any order, any rank, multiple warps) instead of a
+// backend-private formula.
+//
+// Load/store themselves are layout-agnostic: they walk the unpacked
+// per-thread element lists, whatever encoding produced them. Predicated
 // accesses become an `llvm.cond_br` diamond rather than llvm.masked.* :
 // the masked intrinsics changed arity between LLVM releases (the alignment
 // operand was removed upstream) while the pinned Ventus LLVM 16 still
@@ -212,113 +219,6 @@ struct VentusStoreOpConversion
   }
 };
 
-struct VentusMakeRangeOpConversion
-    : public ConvertOpToLLVMPattern<triton::MakeRangeOp> {
-  using ConvertOpToLLVMPattern<triton::MakeRangeOp>::ConvertOpToLLVMPattern;
-
-  // V1: 1-D blocked layouts only. For a 1-D blocked encoding the per-thread
-  // element indices are r + lane * sizePerThread + warp * (32 * sizePerThread).
-  LogicalResult
-  matchAndRewrite(triton::MakeRangeOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto tensorTy = cast<RankedTensorType>(op.getType());
-    if (tensorTy.getRank() != 1)
-      return failure();
-    auto blocked =
-        dyn_cast<triton::gpu::BlockedEncodingAttr>(tensorTy.getEncoding());
-    if (!blocked)
-      return failure();
-    unsigned spt = blocked.getSizePerThread()[0];
-    unsigned threadsPerWarp = blocked.getThreadsPerWarp()[0];
-
-    auto moduleOp = op->getParentOfType<ModuleOp>();
-    TritonLLVMOpBuilder b(op.getLoc(), rewriter);
-    Value tid = emitWorkItemBuiltinCall(rewriter, op.getLoc(), moduleOp,
-                                        "_Z12get_local_idj", b.i32_val(0));
-    if (!tid)
-      return failure();
-    Value warp = arith::DivUIOp::create(rewriter, op.getLoc(), tid,
-                                        b.i32_val(threadsPerWarp));
-    Value laneInWarp = arith::RemUIOp::create(rewriter, op.getLoc(), tid,
-                                              b.i32_val(threadsPerWarp));
-    Value warpBase = arith::MulIOp::create(
-        rewriter, op.getLoc(), warp, b.i32_val(threadsPerWarp * spt));
-
-    SmallVector<Value> retVals(spt);
-    for (unsigned r = 0; r < spt; ++r) {
-      Value idx = arith::AddIOp::create(rewriter, op.getLoc(), warpBase,
-                                        laneInWarp);
-      idx = arith::AddIOp::create(rewriter, op.getLoc(), idx, b.i32_val(r));
-      idx =
-          arith::AddIOp::create(rewriter, op.getLoc(), idx,
-                                b.i32_val(op.getStart()));
-      retVals[r] = idx;
-    }
-    Value result = packUniqueTensorElements(op.getLoc(), getTypeConverter(),
-                                            retVals, rewriter, tensorTy);
-    rewriter.replaceOp(op, result);
-    return success();
-  }
-};
-
-// Splat-like views replicate one scalar across the thread's registers; unlike
-// the core view conversions they need no thread-id materialization.
-struct VentusSplatOpConversion
-    : public ConvertOpToLLVMPattern<triton::SplatOp> {
-  using ConvertOpToLLVMPattern<triton::SplatOp>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::SplatOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto tensorTy = cast<RankedTensorType>(op.getType());
-    auto *typeConverter = getTypeConverter();
-    auto srcType = typeConverter->convertType(tensorTy);
-    if (auto structTy = dyn_cast<LLVM::LLVMStructType>(srcType))
-      srcType = structTy.getBody()[0];
-    Value src = adaptor.getSrc();
-    if (src.getType() != srcType)
-      return failure();
-    unsigned elems = triton::gpu::getUniqueElemsPerThread(tensorTy);
-    SmallVector<Value> vals(elems, src);
-    Value packed = packUniqueTensorElements(op.getLoc(), typeConverter, vals,
-                                            rewriter, tensorTy);
-    rewriter.replaceOp(op, packed);
-    return success();
-  }
-};
-
-struct VentusConstantSplatOpConversion
-    : public ConvertOpToLLVMPattern<arith::ConstantOp> {
-  using ConvertOpToLLVMPattern<arith::ConstantOp>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(arith::ConstantOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto values = dyn_cast<SplatElementsAttr>(op.getValue());
-    if (!values)
-      return failure();
-    auto tensorTy = cast<RankedTensorType>(op.getType());
-    auto *typeConverter = getTypeConverter();
-    auto llvmElemTy = typeConverter->convertType(values.getElementType());
-    Attribute attr;
-    if (auto intTy = dyn_cast<IntegerType>(llvmElemTy))
-      attr = rewriter.getIntegerAttr(
-          intTy, values.getValues<IntegerAttr>()[0].getValue());
-    else if (dyn_cast<FloatType>(llvmElemTy))
-      attr = values.getValues<FloatAttr>()[0];
-    else
-      return failure();
-    Value scalar =
-        LLVM::ConstantOp::create(rewriter, op.getLoc(), llvmElemTy, attr);
-    unsigned elems = triton::gpu::getUniqueElemsPerThread(tensorTy);
-    SmallVector<Value> vals(elems, scalar);
-    Value packed = packUniqueTensorElements(op.getLoc(), typeConverter, vals,
-                                            rewriter, tensorTy);
-    rewriter.replaceOp(op, packed);
-    return success();
-  }
-};
-
 } // namespace
 
 void populateVentusLoadStoreOpToLLVMPatterns(
@@ -326,9 +226,6 @@ void populateVentusLoadStoreOpToLLVMPatterns(
     ModuleAxisInfoAnalysis &axisInfoAnalysis, PatternBenefit benefit) {
   patterns.add<VentusLoadOpConversion, VentusStoreOpConversion>(typeConverter,
                                                                benefit);
-  patterns.add<VentusMakeRangeOpConversion>(typeConverter, benefit);
-  patterns.add<VentusSplatOpConversion, VentusConstantSplatOpConversion>(
-      typeConverter, benefit);
 
   // Floating-point ops are re-registered per backend; the core populate only
   // covers the integer set. Mirrors the NVIDIA additions.

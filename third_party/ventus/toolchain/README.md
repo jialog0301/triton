@@ -51,9 +51,9 @@ the producer-local backend stage.
 
 ## Textual IR Boundary Facts
 
-Two producer-side rules follow from the revision gap above and are worth stating
-explicitly, because both were established by experiment against the installed
-toolchain.
+Three producer-side rules follow from the revision gap above and are worth
+stating explicitly, because all were established by experiment against the
+installed toolchain.
 
 **The `ventus_kernel` calling convention is attached on the text.** In the
 pinned Ventus LLVM 16 that convention is calling-convention number 104. The
@@ -72,6 +72,15 @@ validates declarations against its own intrinsic table, so the intrinsics cannot
 cross this boundary. V1 lowers a masked access to an `llvm.cond_br` diamond with
 the loaded value and the `other` operand meeting in the join block. Vectorized
 masked accesses remain a later optimization.
+
+**The `disjoint` flag is stripped from `or`.** MLIR's `llvm.or` carries a
+`disjoint` flag, and Triton's `applyLinearLayout` sets it for provably
+non-overlapping bit ranges, so every LinearLayout-based index computation emits
+`or disjoint`. That keyword arrived in LLVM 17 and the pinned Ventus LLVM 16
+parser rejects it (`expected type` at the keyword). The backend drops the
+keyword on the emitted text; `disjoint` is a promise about the operands, not an
+instruction, a value, or any part of the computed result, so the rewrite is
+semantics-preserving. The same `opt -passes=verify` gate validates it.
 
 ## Upstream Rebase
 

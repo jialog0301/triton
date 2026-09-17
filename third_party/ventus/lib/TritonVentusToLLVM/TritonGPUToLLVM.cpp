@@ -52,8 +52,8 @@ constexpr StringRef kWorkItemIdBuiltin = "_Z12get_local_idj";
 
 } // namespace
 
-// Defined outside the anonymous namespace so the load/store lowering TU can
-// share it (see emitWorkItemBuiltinCall in the header).
+// Shared with the work-item mapping patterns in this file and declared in the
+// header so other translation units can reach it too.
 Value emitWorkItemBuiltinCall(OpBuilder &rewriter, Location loc,
                               ModuleOp moduleOp, StringRef symbol,
                               Value index) {
@@ -340,6 +340,17 @@ struct ConvertTritonGPUToVentusLLVM
       // per-element lowering in VentusLoadStoreOpToLLVM.cpp.
       populateVentusLoadStoreOpToLLVMPatterns(typeConverter, patterns,
                                               axisInfoAnalysis, benefit);
+      // Index generation via LinearLayout: shared with the NVIDIA/AMD
+      // drivers (ttg::toLinearLayout + emitIndices), replacing the former
+      // backend-private 1-D blocked formula.
+      mlir::triton::populateMakeRangeOpToLLVMPattern(typeConverter, targetInfo,
+                                                     patterns, benefit);
+      // View ops (expand_dims / broadcast / reshape / splat / ...): also
+      // shared with NVIDIA and AMD. These make the rank-1 index result of
+      // make_range usable as a 2-D tile index, and they bring the core splat
+      // lowerings, so the backend carries none of its own.
+      mlir::triton::populateViewOpToLLVMPatterns(typeConverter, patterns,
+                                                 benefit);
       mlir::triton::populateSPMDOpToLLVMPattern(typeConverter, patterns,
                                                 targetInfo, benefit);
       mlir::triton::populateControlFlowOpToLLVMPattern(

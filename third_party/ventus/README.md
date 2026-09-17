@@ -25,7 +25,8 @@ MLIR/LLVM 下降低源，`toolchain/` 记录工具链身份与边界事实，`re
 | 编译 `ttir→ttgir→llir→elf` | 完成 | `python/test/unit/ventus/test_pipeline_vector_add.py` |
 | Spike 执行 | 完成 | `test_vector_add_on_spike`：指令日志出现 `vfadd`/`vsw12.v`，grid=4，`num_mismatches=0`，驱动 `wf_size=32`/`wg_size=1` |
 | 版本化 manifest | 完成 | `test_vector_add_manifest_gate4`；编译 gate 记录 argv/stdout/stderr/exit/tool 哈希 |
-| 单测 | 26/26 通过 | `python/test/unit/ventus/` |
+| 索引生成（布局无关） | 完成 | 手写 1-D 公式已删除，改用核心 `populateMakeRangeOpToLLVMPattern`（`ttg::toLinearLayout` + `emitIndices`）；2-D tile 与 2-warp 均在 Spike 上 `num_mismatches=0` |
+| 单测 | 28 项：27 通过 | `python/test/unit/ventus/`；唯一红是 `test_toolchain_identity` 的外部 gpgpu 组件漂移（见 2.1） |
 | ELF 体积 | 26 KB | `--gc-sections -u <kernel>` 裁剪前为 14 MB |
 | 后端可用性 | 目标 `GPUTarget("ventus","ventus-gpgpu",32)`；`triton.compile` 可用 | `driver.py` 仍是 stub，`kernel[grid](...)` 尚不可用 |
 
@@ -88,8 +89,11 @@ git log --oneline <我们的基点>..<目标提交>^ -- <该补丁触及的文�
    浮点 elementwise（核心只注册整数集）。见 `VentusLoadStoreOpToLLVM.cpp`。
 5. **寄存器只上报、不分配。** VGPR/SGPR 由 Ventus LLVM 16 的 `llc` 分配；Triton 侧只能通过
    布局（`sizePerThread`/`warpsPerCTA`）影响压力，并读 VRES 记录上报。
-6. **当前布局尚未用上 LinearLayout**：仍是核心 `#ttg.blocked` + `sizePerThread=1` +
-   `VentusMakeRangeOpConversion` 里手写的 1-D 索引公式。见第 6 节。
+6. **索引生成已 LinearLayout 化（2026-09-17）**：`tt.make_range` 不再由后端私有公式降低，
+   改走核心 `populateMakeRangeOpToLLVMPattern`，即 `ttg::toLinearLayout(tensorTy)` +
+   `emitIndices(...)`；同时注册核心 `populateViewOpToLLVMPatterns`（`expand_dims`/`broadcast`/
+   `splat`/…），后端不再自带 splat lowering。三条硬门槛（rank 必须为 1、编码必须恰是
+   `BlockedEncodingAttr`、公式里 `warp * 32` 隐含 1-D）随之消失。见第 6 节。
 
 ## 4. 硬件资源模型（RTL 事实）
 
@@ -138,13 +142,49 @@ VRES v1 资源记录：24 字节，字段序 `[vgpr, sgpr, lds, pds]`，由 Vent
 
 ## 6. LinearLayout 的使用方式
 
-现状：使用的是核心 `#ttg.blocked`，而 `BlockedEncodingAttr::toLinearLayout` 已存在于核心
-（`LinearLayoutConversions.cpp:866`），所以 **LinearLayout 现在即可使用，无需任何核心改动**，
-只是尚未被调用。分三步启用：
+**现状（2026-09-17）：第 1 步已完成。** 索引生成（`tt.make_range`）与视图类
+（`expand_dims`/`broadcast`/`splat`/…）都走核心 populate，后端不再持有任何布局公式：
 
-1. **改造现有 lowering（零核心改动）**：在 load/store 与 `VentusMakeRangeOpConversion` 中以
-   `ttg::toLinearLayout(tensorTy)` + `emitIndices(...)` 取代手写索引公式，立刻支持 N 维、任意
-   `order`、多 warp。回归网：3 个管线测试 + Spike 执行测试必须保持全绿。
+| 原后端私有实现 | 现状 |
+|---|---|
+| `VentusMakeRangeOpConversion`（rank==1 门槛 + `dyn_cast<BlockedEncodingAttr>` 门槛 + 手写 `r + lane*spt + warp*32*spt`） | 删除；改用核心 `populateMakeRangeOpToLLVMPattern`（`ttg::toLinearLayout` + `emitIndices`） |
+| `VentusSplatOpConversion`、`VentusConstantSplatOpConversion` | 删除；核心 `populateViewOpToLLVMPatterns` 覆盖（且支持指针 bitcast 与位宽打包，是超集） |
+| 无 `expand_dims`/`broadcast` lowering | 由 `populateViewOpToLLVMPatterns` 提供，这是 2-D tile 的必要条件 |
+
+留下的后端私有 lowering 只剩两类，且都与布局无关：全局 `tt.load/tt.store`
+（逐元素、`unpackLLElements`）与浮点 elementwise。
+
+#### 实测：迁移后的能力与证据（2026-09-17）
+
+| 场景 | 布局特征 | 结果 |
+|---|---|---|
+| 1-D vector add（`num_warps=1`） | blocked、仅 lane/register basis | Spike `num_mismatches=0`（原有基线） |
+| 2-D tile `4x8`（`tl.arange(M)[:,None]`/`[None,:]`） | rank-2 blocked `order=[1,0]`、两个 `#ttg.slice` 子编码 | 编译通过 + Spike `num_mismatches=0`（`test_2d_tile_vector_add_on_spike`） |
+| 1-D `num_warps=2`（`v1-64`，N=128 全活跃） | blocked + warp basis | Spike `num_mismatches=0`（`test_vector_add_two_warps_on_spike`） |
+
+2-D tile 的 LLIR 里能直接读到 LinearLayout 的产物（lane 3–4 位 → dim0，lane 0–2 位 → dim1，
+再 `m*8 + n`）：
+
+```llvm
+%10 = or i32 0, %9          ; 原样是 `or disjoint`，见下
+%11 = and i32 %10, 24       ; dim0: lane>>3
+%12 = lshr i32 %11, 3
+%22 = and i32 %21, 7        ; dim1: lane&7
+%28 = mul i32 %17, 8
+%29 = add i32 %28, %27      ; offs = m*8 + n
+```
+
+#### 迁移带出的第二个文本边界（已解决）
+
+`applyLinearLayout` 对可证明位不相交的操作数用 `or disjoint`（MLIR `llvm.or` 的 disjoint 标志）。
+该关键字是 LLVM 17 才有的，Ventus LLVM 16 的 parser 直接报 `expected type`。修法在
+`backend/compiler.py`：`_strip_or_disjoint()` 在写文本 IR 时去掉该关键字（语义等价——disjoint 是
+操作数承诺，不是指令/取值的一部分），仍由 elf 阶段的 `opt -passes=verify` 把关。详见
+`toolchain/README.md` 的 "Textual IR Boundary Facts"。
+
+#### 下一步（仍是第 2、3 步）
+
+1. ~~**改造现有 lowering（零核心改动）**~~：已完成，见上表。
 2. **MMA 编码属性**：新增 `VentusMmaEncodingAttr`，放在**核心** `TritonGPUAttrDefs.td`（NVIDIA
    与 AMD 的 MMA 编码都在核心：`NvidiaMmaEncodingAttr:1272`、`AMDMfmaEncodingAttr:902`、
    `AMDWmmaEncodingAttr:1075`），并带 `MmaEncodingTrait`。
@@ -161,21 +201,20 @@ VRES v1 资源记录：24 字节，字段序 `[vgpr, sgpr, lds, pds]`，由 Vent
    （`SharedEncodingTrait` 的方法为 `getAlignment` + `toLinearLayout`）。起步阶段更省事的选择
    仍是核心 `SharedLinearEncodingAttr`（`LinearLayoutConversions.cpp:1238`）。
 
-#### 实测：与现状的等价性、能力边界、迁移面（2026-09-17）
+#### 迁移前的等价性实测（保留作为判据记录）
 
-用 `triton._C.libtriton.linear_layout` 的 `LinearLayout.from_bases(...).apply({...})` 对手写公式
-`r + lane*spt + warp*32*spt` 做了**逐点**比对，四种配置**零不等点**：
+迁移**之前**用 `triton._C.libtriton.linear_layout` 的 `LinearLayout.from_bases(...).apply({...})`
+对手写公式 `r + lane*spt + warp*32*spt` 做了逐点比对，四种配置**零不等点**——这是"迁移不改变语义"
+的机器证据（公式现已删除，本表仅作为迁移决策的依据保留）：
 
 | 配置 | bases | 不等点 |
 |---|---|---|
-| `spt=1, tpw=32, warps=1`（现状） | `register [], lane [[1],[2],[4],[8],[16]], warp []` | 0 |
+| `spt=1, tpw=32, warps=1` | `register [], lane [[1],[2],[4],[8],[16]], warp []` | 0 |
 | `spt=2` | `register [[1]], lane [[2],…,[32]]` | 0 |
 | `spt=4` | `register [[1],[2]], lane [[4],…,[64]]` | 0 |
 | `warps=2` | `lane [[1],…,[16]], warp [[32]]` | 0 |
 
-即现状的"散文公式"与规范形式是**同一个映射**：迁移不改变语义，只改变表达与可组合性。
-
-**能力边界（实测失败）**：2-D tile kernel（`tl.arange(0,M)[:,None]` 配合 `[None,:]`）编译失败——
+**曾被卡住的能力边界（现已解锁）**：2-D tile kernel 过去编译失败——
 
 ```
 failed to legalize 'tt.make_range' : () -> tensor<4xi32,
@@ -183,16 +222,10 @@ failed to legalize 'tt.make_range' : () -> tensor<4xi32,
             threadsPerWarp = [4,8], warpsPerCTA = [1,1], order = [1,0]}>}>
 ```
 
-原因在 `VentusLoadStoreOpToLLVM.cpp:224-231` 的两道硬门槛：`tensorTy.getRank() != 1`，以及
-`dyn_cast<BlockedEncodingAttr>`（`SliceEncodingAttr` 被拒）；且公式里的 `warp * 32` 是 1-D 硬假设，
-无法表达 `order=[1,0]`。核心侧 `SliceEncodingAttr::toLinearLayout` 已存在
-（`LinearLayoutConversions.cpp:1048`）。
-
-**迁移面比预期小**：load/store 走 `unpackLLElements`，与布局和 rank 无关；真正被 1-D blocked 卡住的
-**只有索引生成（`make_range`）**。第一步因此只需改 `VentusMakeRangeOpConversion`。
-
-**验收网**：3 个管线测试 + `test_vector_add_on_spike` 必须保持全绿；迁移完成后再补一个 2-D kernel
-的编译/执行测试作为"解锁"证据。
+原因就是后来被删掉的两道硬门槛（`rank != 1`、`dyn_cast<BlockedEncodingAttr>`）。核心侧
+`SliceEncodingAttr::toLinearLayout`（`LinearLayoutConversions.cpp:1048`）本就存在，所以这次
+只需改索引生成的来源。**迁移面确实只到索引生成**：load/store 走 `unpackLLElements`，与布局和
+rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，由核心 view pattern 一并解决。
 
 工具函数：`LinearLayout::identity1D`、`sublayout`、`invertAndCompose`、`basesPerDim`
 （`include/triton/Tools/LinearLayout.h:341-769`）；调试时 `llvm::errs() << ll`。
@@ -202,7 +235,7 @@ failed to legalize 'tt.make_range' : () -> tensor<4xi32,
 | 序 | 内容 | 依赖 | 论文价值 |
 |---|---|---|---|
 | **P0** | 测量闭环：`launcher.py` 的 `DRIVER_SO` 改为可选驱动（cyclesim / auto_select），并建立 OpenCL(POCL) 基线数字 | — | 使后续所有结论可证 |
-| **P1** | 布局/向量化/占用率：LinearLayout 化索引、`sizePerThread`、`num_warps`、coalesce；去除逐元素标量访存 | — | "Triton 生成 vs OpenCL/手写"主结果 |
+| **P1** | 布局/向量化/占用率：~~LinearLayout 化索引~~（已完成，见第 6 节）、`sizePerThread`、`num_warps`、coalesce；去除逐元素标量访存 | — | "Triton 生成 vs OpenCL/手写"主结果 |
 | **P2** | LDS + barrier：`add_allocate_shared_memory` + membar + 实现 `storeDShared`/`loadDShared`；barrier 走文本注入或 inline asm | 核心基建已备 | 支撑 tiling/reduction/MMA |
 | **P3** | 分歧硬件（`vbranch`/`join`/掩码栈）与现有软件谓词路径做 A/B | 工具链（新内建/CC） | **论文核心差异化**（软件谓词一臂已实现） |
 | **P4** | LLVM 版本对齐 → 一等 Ventus 内建，移除文本边界与相关 hack | 工具链（大工程） | 工程债清理，P3/P5 的前提 |
@@ -220,6 +253,9 @@ failed to legalize 'tt.make_range' : () -> tensor<4xi32,
   cherry-pick**（见 2.1），强行为之等于在旧 API 上手工移植语义。
 - 消费端 LLVM 的翻译器按自身内建表校验声明：Ventus 专有内建无法直接声明（`masked.*`、
   `llvm.riscv.ventus.barrier` 皆属此类），须走文本注入或 `llvm.inline_asm`。
+- **`or disjoint` 不能跨到 Ventus LLVM 16**（LLVM 17 才有该关键字）。任何走 `emitIndices` 的
+  lowering 都会带上它，`backend/compiler.py::_strip_or_disjoint()` 在文本层去掉。同类风险：消费端
+  LLVM 若引入新的标志/关键字（如 `icmp samesign`），会在 elf 阶段的 `opt -passes=verify` 才暴露。
 - `--gc-sections` 必须配 `-u <kernel>`，否则内核被静默删除（已有测试双向守护）。
 - `version.json` 尚未纳入版本控制，新克隆会缺该文件（`VentusBackend.hash()` 与身份测试都依赖它）。
 
@@ -229,5 +265,5 @@ failed to legalize 'tt.make_range' : () -> tensor<4xi32,
   Chisel 设计重建。P5 的关键路径。
 - `driver.py` 仍是 stub：Triton 原生启动路径不可用，目前只能 `triton.compile` + 参考启动器。
 - 启动形态：`supported_local_sizes = [[32,1,1],[64,1,1]]`，`mma_local_size = [32,1,1]`，grid 1 维；
-  `v1-64`（`num_warps=2`）profile 已定义但未端到端验证。
+  `v1-64`（`num_warps=2`）profile 已端到端验证（`test_vector_add_two_warps_on_spike`，N=128）。
 - `metadata["shared"]` 目前写死 0，需在 P2 换成真实分配结果。
