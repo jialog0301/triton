@@ -348,6 +348,11 @@ class LaunchSpec:
     # 2-D tile whose flattened offsets cover the same range.
     kernel_name: str = "vector_add_kernel"
     driver: str = DEFAULT_DRIVER      # device driver, see DRIVERS
+    # Use exactly the declarations in this spec instead of letting the compiled
+    # VRES record win. The OpenCL arm declares fixed lds/pds/sgpr/vgpr
+    # (`pocl_ventus.cc`), and register declarations steer the model's warp
+    # scheduling, so a cross-implementation comparison has to match them.
+    force_resources: bool = False
 
     def __post_init__(self):
         self.elf = Path(self.elf)
@@ -479,8 +484,15 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
     # (`sp = wid * 1024 + CSR_LDS`) and spike_device::run reserves the private
     # segment, so a launch below those floors would alias warp stacks. The
     # compiled value is still carried in the evidence for launch-time checks.
-    lds = max(resources.get("lds", spec.lds), profile.lds_size)
-    pds = max(resources.get("pds", spec.pds), profile.pds_size)
+    # `force_resources` bypasses both the record and the floors, for a
+    # cross-implementation comparison that must declare the same numbers.
+    if spec.force_resources:
+        lds, pds = spec.lds, spec.pds
+    else:
+        lds = max(resources.get("lds", spec.lds), profile.lds_size)
+        pds = max(resources.get("pds", spec.pds), profile.pds_size)
+    sgpr = spec.sgpr if spec.force_resources else resources.get("sgpr", spec.sgpr)
+    vgpr = spec.vgpr if spec.force_resources else resources.get("vgpr", spec.vgpr)
 
     driver = _Driver(INSTALL / "lib" / DRIVERS[spec.driver], spec.driver)
     # Spike's driver formats the ELF path into fixed-size buffers, so a
@@ -536,8 +548,8 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
         md.metaDataBaseAddr = knla
         md.ldsSize = lds
         md.pdsSize = pds
-        md.sgprUsage = resources.get("sgpr", spec.sgpr)
-        md.vgprUsage = resources.get("vgpr", spec.vgpr)
+        md.sgprUsage = sgpr
+        md.vgprUsage = vgpr
         md.pdsBaseAddr = pds_addr
         md.kernel_name = spec.kernel_name.encode()
 

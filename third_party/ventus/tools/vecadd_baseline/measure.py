@@ -40,6 +40,14 @@ VENTUS_ROOT = REPO / "third_party/ventus"
 BASELINE_DIR = Path(__file__).resolve().parent
 INSTALL = Path("/home/weijiale/Code/cuda2rvv/ventus-env/install")
 
+# Resource declarations the OpenCL arm sends, from `pocl_ventus.cc`
+# (`ldssize`/`pdssize`/`sgpr_usage`/`vgpr_usage`). The Triton arm is launched
+# with `force_resources` so both arms declare the same numbers: register
+# declarations steer the model's warp scheduling, so leaving our VRES-derived
+# values in place would compare two different occupancy decisions rather than two
+# implementations.
+OPENCL_DECLARED = {"lds": 0x1000, "pds": 0x1000, "sgpr": 64, "vgpr": 64}
+
 _KERNEL_WINDOW = re.compile(
     r"kernel \d+ \S+ initialized\b[^\n]*@(\d+)ns.*?"
     r"kernel \d+ \S+ finished @(\d+)ns", re.DOTALL)
@@ -145,11 +153,13 @@ def _triton_child(n: int, local: int, backend: str, cache: Path) -> int:
     launcher = importlib.import_module("triton.backends.ventus.launcher")
     result = launcher.run_vector_add(
         launcher.LaunchSpec(elf=next(cache.rglob("*.elf")), n_elements=n,
-                            local_size=local, driver=backend))
+                            local_size=local, driver=backend,
+                            force_resources=True, **OPENCL_DECLARED))
     print(json.dumps({
         "grid": result["grid"],
         "num_mismatches": result["num_mismatches"],
         "driver_total_ns": result["simulated_time_ns"],
+        "declared": OPENCL_DECLARED,
     }))
     return 0
 
