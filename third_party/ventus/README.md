@@ -161,6 +161,39 @@ VRES v1 资源记录：24 字节，字段序 `[vgpr, sgpr, lds, pds]`，由 Vent
    （`SharedEncodingTrait` 的方法为 `getAlignment` + `toLinearLayout`）。起步阶段更省事的选择
    仍是核心 `SharedLinearEncodingAttr`（`LinearLayoutConversions.cpp:1238`）。
 
+#### 实测：与现状的等价性、能力边界、迁移面（2026-09-17）
+
+用 `triton._C.libtriton.linear_layout` 的 `LinearLayout.from_bases(...).apply({...})` 对手写公式
+`r + lane*spt + warp*32*spt` 做了**逐点**比对，四种配置**零不等点**：
+
+| 配置 | bases | 不等点 |
+|---|---|---|
+| `spt=1, tpw=32, warps=1`（现状） | `register [], lane [[1],[2],[4],[8],[16]], warp []` | 0 |
+| `spt=2` | `register [[1]], lane [[2],…,[32]]` | 0 |
+| `spt=4` | `register [[1],[2]], lane [[4],…,[64]]` | 0 |
+| `warps=2` | `lane [[1],…,[16]], warp [[32]]` | 0 |
+
+即现状的"散文公式"与规范形式是**同一个映射**：迁移不改变语义，只改变表达与可组合性。
+
+**能力边界（实测失败）**：2-D tile kernel（`tl.arange(0,M)[:,None]` 配合 `[None,:]`）编译失败——
+
+```
+failed to legalize 'tt.make_range' : () -> tensor<4xi32,
+  #ttg.slice<{dim = 1, parent = #ttg.blocked<{sizePerThread = [1,1],
+            threadsPerWarp = [4,8], warpsPerCTA = [1,1], order = [1,0]}>}>
+```
+
+原因在 `VentusLoadStoreOpToLLVM.cpp:224-231` 的两道硬门槛：`tensorTy.getRank() != 1`，以及
+`dyn_cast<BlockedEncodingAttr>`（`SliceEncodingAttr` 被拒）；且公式里的 `warp * 32` 是 1-D 硬假设，
+无法表达 `order=[1,0]`。核心侧 `SliceEncodingAttr::toLinearLayout` 已存在
+（`LinearLayoutConversions.cpp:1048`）。
+
+**迁移面比预期小**：load/store 走 `unpackLLElements`，与布局和 rank 无关；真正被 1-D blocked 卡住的
+**只有索引生成（`make_range`）**。第一步因此只需改 `VentusMakeRangeOpConversion`。
+
+**验收网**：3 个管线测试 + `test_vector_add_on_spike` 必须保持全绿；迁移完成后再补一个 2-D kernel
+的编译/执行测试作为"解锁"证据。
+
 工具函数：`LinearLayout::identity1D`、`sublayout`、`invertAndCompose`、`basesPerDim`
 （`include/triton/Tools/LinearLayout.h:341-769`）；调试时 `llvm::errs() << ll`。
 
