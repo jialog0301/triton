@@ -193,6 +193,10 @@ class VentusBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         passes.ttir.add_convert_to_ttgpuir(
             pm, "ventus", options.num_warps, options.warp_size, 1)
+        # Before the layout passes: on this target one element per thread keeps a
+        # warp's accesses contiguous (README 4.4 measures the alternative at 2.7x
+        # slower), and the coalescer reads exactly these hints.
+        ventus.passes.add_strip_pointer_hints(pm)
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttir.add_triton_licm(pm)

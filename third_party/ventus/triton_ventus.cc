@@ -39,6 +39,9 @@ void init_triton_ventus(py::module_ &m) {
 
   auto passes = m.def_submodule("passes");
   passes.def("register_passes", []() { return true; });
+  passes.def("add_strip_pointer_hints", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::ventus::createStripPointerHintsPass());
+  });
   passes.def("add_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::ventus::createConvertTritonGPUToVentusLLVMPass());
   });

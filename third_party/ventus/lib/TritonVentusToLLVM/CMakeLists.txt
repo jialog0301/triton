@@ -1,4 +1,5 @@
 add_triton_library(VentusGPUToLLVM
+    StripPointerHints.cpp
     TritonGPUToLLVM.cpp
     VentusLoadStoreOpToLLVM.cpp
 

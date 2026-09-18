@@ -212,7 +212,8 @@ POCL_DEVICES=ventus VENTUS_BACKEND=cyclesim ./vecadd_baseline kernel.cl 1024 32
 .venv/bin/python third_party/ventus/tools/vecadd_baseline/measure.py --n 1024 --local 32 --backend cyclesim
 ```
 
-**首个数字**（n=1024、local=32、grid=32，两臂 `num_mismatches=0`）：
+**首个数字**（n=1024、local=32、grid=32，两臂 `num_mismatches=0`；⚠️ OpenCL 臂当时只有 1 元素/
+work-item 的未调优形状，**同形状的公平对照在 §4.4**，结论与这里的初值不同）：
 
 | 臂 | 模拟器 | 内核模型时间 | 折算 cycles（10 ns/cycle） |
 |---|---|---|---|
@@ -229,38 +230,52 @@ POCL 在 `pocl_ventus.cc` 里硬编码 `ldssize=0x1000`、`pdssize=0x10000000` �
 其余限制：spike 只做功能、没有 cycle 数；RTL 覆盖不了 grid=32（§4.2 的 grid ≤ num_sm=2）；两臂各自的
 "总模拟时间"窗口不同（`measure.py` 因此统一取模拟器日志里的 `initialized→finished` 内核窗口）。
 
-### 4.4 P1 实测：布局与 tile 形状（2026-09-17）
+### 4.4 P1 实测：布局、tile 形状与对照臂（2026-09-18）
 
-n=1024、`num_warps=1`、cyclesim 的内核窗口（10 ns/cycle）：
+n=1024、cyclesim 的内核窗口（10 ns/cycle），两臂都 `num_mismatches=0`。
 
-| 配置 | grid | 模型时间 | 说明 |
+**平局区（同形状、1 warp）**——两臂都拿到"每 work-item 多元素"的同等调优空间后：
+
+| 形状（程序数 × 每线程元素） | Triton | OpenCL(POCL) | 差 |
 |---|---|---|---|
-| BLOCK=32（每线程 1 元素） | 32 | 183015 ns | 初始基线 |
-| BLOCK=64 | 16 | 113595 ns | |
-| BLOCK=128 | 8 | 85845 ns | |
-| **BLOCK=256** | **4** | **77865 ns** | 本轮最优 = 基线的 **2.35×** |
-| BLOCK=512（每线程 16 元素） | 2 | 126045 ns | 程序太少，无法覆盖延迟，反转 |
+| grid=8 × 4 | 85845 ns | 86665 ns | Triton 快 0.9% |
+| grid=4 × 8 | 77865 ns | 73015 ns | Triton 慢 6.6% |
+| grid=2 × 16 | 126045 ns | 63985 ns | Triton 慢 97% |
+| **各自最优** | **77865**（1 warp, BLOCK=256, grid=4） | **63985**（items=16, local=32, grid=2） | **慢 21.7%** |
 
-两条机制性结论（均有实测支撑）：
+（⚠️ 上一版 §4.4 写"2.33× 领先"是**错的**：那是拿调优过的 Triton 比未调优的 OpenCL（1 元素/work-item）。
+本节表格是两臂同形状的结果。OpenCL 臂现已支持 `--opencl-items`，`kernel.cl` 的 `items` 参数与
+Triton 的 tile 语义一一对应。）
 
-1. **每线程连续多元素（`sizePerThread>1`）在这台机器上是负优化。** 给指针加
-   `tt.divisibility=16` 后 coalescer 把 `sizePerThread` 从 1 提到 4；同一 kernel、同一 grid 下
-   **ISA 几乎不变**（351 vs 349 条指令，同样的 `vlw12.v`×8 / `vsw12.v`×4），模型时间却从
-   85845 ns 变成 229185 ns（**2.7×**）。差异纯粹来自访存模式：32 个 lane 的地址从"连续 128 B"
-   变成"跨步 16 B"。**结论：本后端不用 divisibility 去换 per-thread 向量宽度**，
-   `tools/vecadd_baseline` 因此默认 `--no-hint`（flag 保留以便复现该结论）。
-2. **每程序覆盖的元素数（tile）是主导项。** grid 32→4 把时间降到 1/2.35；但 BLOCK=512
-   （grid=2）又变慢——程序数太少盖不住延迟。当前最优区间在 grid≈4（BLOCK=256、1 warp）。
+**Triton 侧的形状曲线**（1 warp）：BLOCK=32/64/128/256/512 = 183015/113595/85845/**77865**/126045 ns。
+**OpenCL 侧**（local=32, items=1/2/4/8/16）= 210895/130915/86665/73015/**63985** ns。
 
-**被推翻的常规 GPU 直觉**：我先按"每条连续 run 一次向量访存 + 整段掩码判一次"实现了 per-thread
-向量化，实测**更慢**（连 unmasked、完全没有 guard 的纯向量路径也是 224840 ns vs 80930 ns，慢 2.8×），
-已回退。原因：Ventus 的向量单元是 32 lane，宽度花在 **lane**（warp 连续）上才有用，花在**每线程
-寄存器**上只用到 4 个 lane，还要付 `vset`/`vmv` 提取的代价。见 §8。
+**占用率（2 warp，local=64，`v1-64`）**：Triton BLOCK=128/256/512 = 135315/91425/83025 ns；
+OpenCL items=2/4/8 = 129925/87925/71875 ns。**在同一形状下 2 warp 全面劣于 1 warp**
+（如 grid=8：1 warp 85845 vs 2 warp 135315）。结论：**这台机器上占用率应靠更多 CTA 而不是更多
+warp/CTA**；`v1-64` 只适合少数需要 CTA 内协作的场景。
 
-**对照臂**（同 n、同 cyclesim、两臂 `mismatches=0`）：OpenCL(POCL，1 元素/work-item，grid=32)
-181465 ns vs Triton(BLOCK=256) 77865 ns → **2.33×**。⚠️ 这还**不是**公平对照：OpenCL 臂尚未获得
-"每 work-item 多元素"的同等调优空间（需给 .cl 版本加 `for` 循环或 `float4` 复刻同形状）。§4.3 的
-受控对照要求两臂形状一致，这是 P1 的下一步。
+**大 tile 的代价是寄存器压力**（VRES 实测）：BLOCK=256 → vgpr=35，BLOCK=512 → **vgpr=69**，
+时间同时从 77865 劣化到 126045 ns；把大 tile 写成"小 BLOCK + 网格跨步循环"能把 vgpr 压到
+9–19（`tl.range` 循环体），但该形式在 grid=2 仍为 84830 ns，仍慢于最优的 77865。
+
+**布局结论（决定性的，见 §8）**：`sizePerThread>1`（每线程连续多元素）在这台机器上是负优化——
+同一 kernel、同一 grid、**指令流几乎相同**（351 vs 349 条，同样的 `vlw12.v`×8 / `vsw12.v`×4）却慢
+2.7×（85845 → 229185 ns），因为 32 个 lane 的地址从"连续 128 B"变成"跨步 16 B"。因此：
+
+- 本后端**不使用** `tt.divisibility` 去换 per-thread 向量宽度；新增
+  `createStripPointerHintsPass()`（`lib/TritonVentusToLLVM/StripPointerHints.cpp`）在 coalesce 之前
+  丢掉指针参数上的这类提示，保证**任何**编译路径（含带 hint 的真实 JIT 路径）都得到 warp 连续的布局。
+  实测：带 hint 编译 BLOCK=128 从 229185 ns 回到 85845 ns，TTGIR 里 `sizePerThread=[1]` 不变。
+- 我按 NVIDIA 直觉实现过 per-thread 向量访存（连续 run 一条向量 + 整段掩码判一次），实测**更慢**
+  （连 unmasked 纯向量路径也是 224840 vs 80930 ns，慢 2.8×），已删除并记录。Ventus 的向量单元是
+  32 lane：宽度花在 **lane** 上才有用（LLVM 自动把每 lane 标量代码变成 warp 级 `vlw12.v`/`vfadd.vv`），
+  花在每线程寄存器上只用到 4 个 lane，还要付 `vset`/`vmv` 提取代价。
+
+**P1 收尾时仍未闭合的部分**（证据已备，留给下一阶段）：grid=2 时 Triton 的循环形式（84830 ns）
+仍比 OpenCL 的等价标量循环（63985 ns）慢 33%。掩码与地址算术的每元素成本是主要嫌疑（实测"整段
+去掩码"值约 7%：masked 87020 vs unmasked 80930 @BLOCK=128/grid=8），但**块模型下的每元素指令数**
+（掩码比较、谓词化访存、`vmv` 搬运）尚未逐条拆解，也还没实现任何"整段掩码一次判"的 lowering 优化。
 
 
 
@@ -376,7 +391,7 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
 | 序 | 内容 | 依赖 | 论文价值 |
 |---|---|---|---|
 | **P0** | 测量闭环：~~驱动可选 + cycle 级数字~~（§4.1）、~~OpenCL(POCL) 基线~~（§4.3 已建立，首个受控数字待补：先对齐两臂的资源声明）。*已降级*：RTL 多波分发、cyclesim↔RTL 模型校准——验证路径已定 spike（§4.1） | — | 使后续所有结论可证 |
-| **P1** | 布局/向量化/占用率：~~LinearLayout 化索引~~（已完成，第 6 节）、~~布局与 tile 形状实测~~（§4.4：**不用** per-thread 向量宽度、tile 是主导项、BLOCK=256 当前最优 = 基线 2.35×）；**还差**：① OpenCL 臂同形状复刻（公平对照）② 每元素指令数（掩码/地址算术）③ `num_warps=2` 与占用率 ④ 真实 JIT 启动会自带 divisibility → 需在 TTGIR 限制 per-thread 宽度（§8） | — | "Triton 生成 vs OpenCL/手写"主结果 |
+| **P1** | ~~布局/向量化/占用率~~：索引（第 6 节）、布局偏好（§4.4 + `StripPointerHints`）、tile/warp 曲线与**同形状** OpenCL 对照（§4.4）均已完成。**已移交下一阶段**：块模型下的每元素指令数（掩码/地址算术）——grid=2 时比等价的 OpenCL 标量循环慢 33%，证据与嫌疑见 §4.4 末段 | — | "Triton 生成 vs OpenCL/手写"主结果（同形状：grid=8 平、grid=4 慢 6.6%、各自最优慢 21.7%） |
 | **P2** | LDS + barrier：`add_allocate_shared_memory` + membar + 实现 `storeDShared`/`loadDShared`；barrier 走文本注入或 inline asm | 核心基建已备 | 支撑 tiling/reduction/MMA |
 | **P3** | 分歧硬件（`vbranch`/`join`/掩码栈）与现有软件谓词路径做 A/B | 工具链（新内建/CC） | **论文核心差异化**（软件谓词一臂已实现） |
 | **P4** | LLVM 版本对齐 → 一等 Ventus 内建，移除文本边界与相关 hack | 工具链（大工程） | 工程债清理，P3/P5 的前提 |
@@ -393,10 +408,15 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
 - **每程序覆盖的元素数是主导项**：n=1024 时 grid 32→4 让时间降到 1/2.35（183015 → 77865 ns），
   grid=2 又反弹。`LaunchSpec.elements_per_program` 就是给 tile ≠ lane 数准备的；用 `local_size`
   推 grid 会多跑 8× 的全掩码程序。
+- **大 tile 会撞寄存器压力**：BLOCK=512（每线程 16 元素）比 BLOCK=256 多一倍 VGPR（VRES：69 vs 35），
+  时间从 77865 劣化到 126045 ns。需要更大 tile 时优先"小 BLOCK + 网格跨步 `tl.range` 循环"。
+- **2 warp/CTA 在 `v1-64` 下全面慢于 1 warp**（同形状 grid=8：135315 vs 85845 ns）：这台机器的占用率
+  要靠更多 CTA，而不是更多 warp/CTA。
 - **真实 JIT 启动会自动带上 divisibility**：Triton 运行时按实际指针地址给参数打 `tt.divisibility`，
   所以正常 `kernel[grid](...)` 路径会走到 `sizePerThread=4` 的**慢布局**（§4.4 的 2.7×），而本仓的
   离线 `ASTSource` 编译与 `measure.py`（默认 `--no-hint`）走的是快布局。**引用数字时必须注明是哪条
-  路径**；要根治需在 TTGIR 阶段限制 per-thread 宽度（核心 coalescer 无目标钩子，属 P1 未决项）。
+  路径**。已根治：`StripPointerHints` 在 coalesce 前丢掉指针参数上的这类提示，实测带 hint 编译
+  BLOCK=128 从 229185 ns 回到 85845 ns，TTGIR 里 `sizePerThread=[1]` 不变。
 - **MMA 操作数寄存器布局必须与 LinearLayout 严格一致**，否则是静默算错而非崩溃。先用单个已知
   tile 的微基准在 cyclesim 上验证映射，再放大。
 - `MmaEncodingTrait::dotOperandToLinearLayout` 的默认实现是 `report_fatal_error`——**不实现能编译

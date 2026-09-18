@@ -39,14 +39,18 @@ static std::string read_file(const char *path) {
 }
 
 int main(int argc, char **argv) {
-  if (argc < 3) {
-    std::fprintf(stderr, "usage: %s <kernel.cl> <n> <local>\n", argv[0]);
+  if (argc < 4) {
+    std::fprintf(stderr, "usage: %s <kernel.cl> <n> <local> [items]\n", argv[0]);
     return 2;
   }
   const char *kernel_path = argv[1];
   const int n = std::atoi(argv[2]);
   const int local = std::atoi(argv[3]);
-  const size_t global = ((size_t)(n + local - 1) / local) * local;
+  const int items = argc > 4 ? std::atoi(argv[4]) : 1;
+  // One work-group covers `local * items` elements, so the grid follows the
+  // tile and not the work-group size -- the same relation the Triton arm uses.
+  const size_t per_group = (size_t)local * (size_t)items;
+  const size_t global = ((size_t)(n + per_group - 1) / per_group) * local;
 
   cl_platform_id platform;
   cl_device_id device;
@@ -101,6 +105,7 @@ int main(int argc, char **argv) {
   check(clSetKernelArg(kernel, 1, sizeof(cl_mem), &bbuf), "arg b");
   check(clSetKernelArg(kernel, 2, sizeof(cl_mem), &cbuf), "arg c");
   check(clSetKernelArg(kernel, 3, sizeof(cl_int), &n), "arg n");
+  check(clSetKernelArg(kernel, 4, sizeof(cl_int), &items), "arg items");
 
   const size_t gws[1] = {global};
   const size_t lws[1] = {(size_t)local};
@@ -130,8 +135,8 @@ int main(int argc, char **argv) {
   clReleaseCommandQueue(queue);
   clReleaseContext(ctx);
 
-  std::printf("RESULT device=%s n=%d local=%d global=%zu grid=%zu "
+  std::printf("RESULT device=%s n=%d local=%d items=%d global=%zu grid=%zu "
               "num_mismatches=%d\n",
-              name, n, local, global, global / (size_t)local, mismatches);
+              name, n, local, items, global, global / (size_t)local, mismatches);
   return mismatches == 0 ? 0 : 1;
 }

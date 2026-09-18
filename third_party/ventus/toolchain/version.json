@@ -1,0 +1,272 @@
+{
+  "identity_status": "pre_hardening",
+  "release_valid": false,
+  "release_blockers": [
+    "runtime_provenance_uncoordinated",
+    "llvm_resource_transport_unconsumed",
+    "hard_coded_resource_consumption_present"
+  ],
+  "triton_commit": "643b7590aeffd3a9e2c7c121b279c79ffd0db03d",
+  "triton_worktree_content_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "triton_consumer_llvm_hash": "b010a18d2b648cab83c83967ff26b8fde11acdc6",
+  "triton_consumer_llvm_build": 1,
+  "triton_home": "/home/weijiale/Code/cuda2rvv/triton/.worktrees/triton-ventus-v1/.triton-home",
+  "triton_llvm_cache_path": "/home/weijiale/Code/cuda2rvv/triton/.worktrees/triton-ventus-v1/.triton-home/.triton/llvm/llvm-b010a18d-ubuntu-x64-1",
+  "python_executable": "/home/weijiale/Code/cuda2rvv/triton/.worktrees/triton-ventus-v1/.venv/bin/python",
+  "python_version": "3.11.15 (main, Apr 14 2026, 14:28:36) [Clang 22.1.3 ]",
+  "python_triton_provenance": {
+    "status": "editable",
+    "source": "/home/weijiale/Code/cuda2rvv/triton/.worktrees/triton-ventus-v1",
+    "version": "3.8.0+git310241f8",
+    "direct_url": "file:///home/weijiale/Code/cuda2rvv/triton/.worktrees/triton-ventus-v1"
+  },
+  "libtriton_content_hash": "bd2cd98c87e7750083c31a430d87e770eea56797d27b7072046bc685a5340939",
+  "ventus_env_commit": "7e9790708d58ebf697d74fa8dadbaafa1232ca1d",
+  "llvm_commit": "d4f2063fe81cbbefda34da60d4cd5c46bce3d231",
+  "pocl_commit": "0c9a0bf6c51a922cd483e11281ddad70667b681b",
+  "driver_commit": "86a4860f6112e2f016d0f86c2653a75337f4f1f2",
+  "spike_commit": "abe4323aa551fc5e2f80c46322cc3feb6be49a6d",
+  "cyclesim_commit": "335ba24d2c7763c87e8c9bfe889c9074763a32f7",
+  "gpgpu_commit": "f5853809f114192b99657e7021d1e50dfe961fe1",
+  "systemc_commit": "5fc1469339775b54b1fcc2020ac744a58be5b50e",
+  "opencl_cts_commit": "a08f46ba93e23283df625599eb1cd4507fb21ec1",
+  "testcases_commit": "e4630621280554f691580b03b266e0c95b7db47d",
+  "dirty_components": [
+    "ventus-env",
+    "llvm",
+    "pocl",
+    "driver",
+    "spike",
+    "cyclesim",
+    "gpgpu",
+    "ocl-icd",
+    "systemc",
+    "testcases"
+  ],
+  "dirty_component_content_hashes": {
+    "ventus-env": "3cafbad89a97b83521d9aff225ada9335785c42ee8249272e2cffea38151ab85",
+    "llvm": "9be9f9d2e285803ee157528128c7218ed6c23433739bbf04990c6520720851c0",
+    "pocl": "d92ccb68afde0ea747dd4c433d9f724b9cdd680aa709d26e04a87cc3990f02d1",
+    "driver": "935cbfab16bb020ef46b1a496de15245b203de6e227f85af2bb2e42cf7ba220e",
+    "spike": "6510f41f1c4e1e00b50704bdc5abd3f7f2adf3c4aa1a6d2d2da621cee2bb2052",
+    "cyclesim": "3253ea9c123e1dca267cfcc6032589dcc8e8b4fded2f74179ea5547bad8b8a82",
+    "gpgpu": "f71dece67283c50a1203648b640d4371509128371a95efca9b20db2c659fff1e",
+    "ocl-icd": "e07c9d9768346230adce7a645573af4cde8e32b90a116c46a370bf9f6babd745",
+    "systemc": "21717d9ba84cee08f89eab4a76cd7dbdc4110f393b2eaf17cefa80ac2e16a253",
+    "testcases": "48d996cb4319da68972a5118c9706878e1eeeb528b9c0d9c97ecec57723c3a5a"
+  },
+  "dirty_component_review": {
+    "spike": {
+      "status": "intentional_pre_m3_experiment",
+      "installed_binary_contains_patch": false,
+      "target_contract": "newer_chisel_m4k8n4_requires_m3_rework_and_verification"
+    },
+    "driver": {
+      "status": "observed_not_release_provenance"
+    },
+    "cyclesim": {
+      "status": "observed_not_release_provenance"
+    },
+    "pocl": {
+      "status": "observed_not_release_provenance"
+    },
+    "gpgpu": {
+      "status": "untracked_documents_only"
+    },
+    "ocl-icd": {
+      "status": "build_artifacts_only"
+    },
+    "systemc": {
+      "status": "generated_build_files"
+    },
+    "testcases": {
+      "status": "generated_outputs"
+    },
+    "ventus-env": {
+      "status": "submodule_and_untracked_artifacts"
+    },
+    "llvm": {
+      "status": "intentional_task8_provider_contract_patch"
+    }
+  },
+  "ventus_install_prefix": "/home/weijiale/Code/cuda2rvv/ventus-env/install",
+  "tool_binary_hashes": {
+    "clang": {
+      "path": "/home/weijiale/Code/cuda2rvv/ventus-env/install/bin/clang",
+      "sha256": "b101c8034404df86a5b0cd1140614658a87fd3d151850d743c54f1309c802223"
+    },
+    "opt": {
+      "path": "/home/weijiale/Code/cuda2rvv/ventus-env/install/bin/opt",
+      "sha256": "9c729b7d41a894c74c82c5b4530db8b3a7aabdae4800c75219771801968ebeab"
+    },
+    "llc": {
+      "path": "/home/weijiale/Code/cuda2rvv/ventus-env/install/bin/llc",
+      "sha256": "a47be2c82bf023d088b680a0dcd968717baa08e4e94caf6cb489cbb4f0700f47"
+    },
+    "ld.lld": {
+      "path": "/home/weijiale/Code/cuda2rvv/ventus-env/install/bin/ld.lld",
+      "sha256": "14f46835bf9cb246ba169dee2cb0b9185d8f394f2be36c1976579587fb0046fc"
+    },
+    "spike": {
+      "path": "/home/weijiale/Code/cuda2rvv/ventus-env/install/bin/spike",
+      "sha256": "f9efde1b1c0df1f70da9cd1d20f7559e88fb07ffb8b324e9bdc98b78eca67c97",
+      "capability_scope": "m1_m2_non_mma",
+      "contains_current_dirty_patch": false
+    },
+    "llvm-objdump": {
+      "path": "/home/weijiale/Code/cuda2rvv/ventus-env/install/bin/llvm-objdump",
+      "sha256": "ebe964863bc5a157be72454a6647dba0c3c1a599a7d47e2ebe612ee95a790bc3"
+    },
+    "llvm-readobj": {
+      "path": "/home/weijiale/Code/cuda2rvv/ventus-env/install/bin/llvm-readobj",
+      "sha256": "77622c471e5acc1615233020a792ddcda2203453dab0adc55a0c28a08208b690"
+    },
+    "llvm-nm": {
+      "path": "/home/weijiale/Code/cuda2rvv/ventus-env/install/bin/llvm-nm",
+      "sha256": "b1794b132a530a8741c7da695028c4fcdc699305a3b2d0442f70be00565e60ad"
+    }
+  },
+  "ventus_backend_library": {
+    "path": "/home/weijiale/Code/cuda2rvv/ventus-env/install/lib/libLLVMRISCVCodeGen.so.16git",
+    "sha256": "10e4470395cdf42c4690fa9c44c6a30907fbfbaa30f19cb569f52cecc1a75974",
+    "build_id": "d0058f5ec1cab9e59e57da5bfa948a475b023b3e",
+    "runpath": "$ORIGIN/../lib",
+    "generation_id": "3a1b0e4451680de2974a825080f953f96fe610e7aaf6090febb4bf5e6ba97d61"
+  },
+  "runtime_build_manifest": {
+    "status": "observed_not_proven",
+    "coordinated": false,
+    "generation_id": null,
+    "reason": "no coordinated source-to-build manifest exists"
+  },
+  "runtime_install_manifest": {
+    "status": "observed_not_proven",
+    "coordinated": false,
+    "generation_id": null,
+    "reason": "CycleSim and driver have separate install events; Spike and SystemC have no install manifest"
+  },
+  "runtime_binary_hashes": {
+    "libspike_main.so": "da374a249e01a989bd2b3769d91d0fa97380e8f2741b61c5121910dcb9437897",
+    "libVentusCycleSim.so": "509109a13a76428c50d0c82cb1e20abd2e0332fcc4b7453ff4184744b4dc0b63",
+    "libramulator.so": "d9255f2cb6abc943e1642856e8b8c733ddd89cb428d5bffbc4d2cdccf9c662d1",
+    "libspike_driver.so": "4189fba0ba52717887084c6e80636da119cb7698db99d1917f9234e4c0f942f8",
+    "libcyclesim_driver.so": "65f951fc9ba2c026dfdf56633bf2243976c8e5cc049fe8ce75b5911e2de55cba",
+    "librtlsim_driver.so": "dc81c9bd7ec03071b7f1836f888d0d14fe19e95a7b739abcc36fefe1ee5ce263",
+    "libgvm_driver.so": "c7d3e9bde9a53fe32ece8c4d122a5009665cb986c380e21f1adc80b5c18ae92d",
+    "libauto_select_driver.so": "113dcbe147afc257ee140233b3a084c832aa96d97c994b7d4845663e0220d6d4",
+    "libsystemc-2.3.4.so": "816fdf6e689644408170b9475a5b8662fd2eb090499a0630043eb8bb2e25aecf"
+  },
+  "runtime_binary_build_ids": {
+    "spike": "612dde9d83d9e5b07ea365ccbab632e7a105a1f1",
+    "libspike_main.so": "11b6a25180c972fa653cb3d1a4026845bcf45a2f",
+    "libVentusCycleSim.so": "4fa07406ffe5ac9edc52db956959eddacc1048fc",
+    "libramulator.so": "ad7647dcb64029dbaaf5253a730d59eeecb5e25d",
+    "libspike_driver.so": "ae1a871804c4a37e7d8f34006c344b1fa71f3468",
+    "libcyclesim_driver.so": "ff16feb05ef32d06da64d8e967e43c681e85835b",
+    "librtlsim_driver.so": "c3c06c095750a6d3dfef5abc2b2ebdda895fa515",
+    "libgvm_driver.so": "ff4b9867c8f3e207ed2d27c6199b55d9d1d72a63",
+    "libauto_select_driver.so": "3e4135afe8fcf91d9489538537ac6942e38788ae",
+    "libsystemc-2.3.4.so": "ce161dc243dbe1cd71935e7aa27f538fd8ad0a28"
+  },
+  "runtime_binary_runpaths": {
+    "spike": "/home/weijiale/Code/cuda2rvv/ventus-env/install/lib",
+    "libspike_main.so": "/home/weijiale/Code/cuda2rvv/ventus-env/install/lib",
+    "libVentusCycleSim.so": "/home/weijiale/Code/cuda2rvv/ventus-env/install/systemc/lib-linux64:$ORIGIN",
+    "libramulator.so": null,
+    "libspike_driver.so": "$ORIGIN",
+    "libcyclesim_driver.so": "$ORIGIN",
+    "librtlsim_driver.so": "$ORIGIN",
+    "libgvm_driver.so": "$ORIGIN",
+    "libauto_select_driver.so": null,
+    "libsystemc-2.3.4.so": null
+  },
+  "target_triple": "riscv32",
+  "mcpu": "ventus-gpgpu",
+  "pointer_width": 32,
+  "warp_size": 32,
+  "supported_local_sizes": [
+    [
+      32,
+      1,
+      1
+    ],
+    [
+      64,
+      1,
+      1
+    ]
+  ],
+  "mma_local_size": [
+    32,
+    1,
+    1
+  ],
+  "cta_to_work_group": "one_to_one",
+  "grid_dimensions": 1,
+  "scalar_types": [
+    "i1",
+    "i32",
+    "f32"
+  ],
+  "capability_record_version": 1,
+  "simulator_address_convention": "physical_device_values",
+  "resource_unit_contract": {
+    "lds": {
+      "unit": "bytes",
+      "aggregation": "per_cta"
+    },
+    "pds": {
+      "unit": "bytes",
+      "aggregation": "per_work_item"
+    },
+    "sgpr": {
+      "unit": "32_bit_register_slots",
+      "aggregation": "per_wavefront"
+    },
+    "vgpr": {
+      "unit": "wavefront_wide_register_slots",
+      "aggregation": "per_wavefront"
+    }
+  },
+  "llvm_resource_transport": {
+    "encoding": "target_endian_vres_v1",
+    "magic": 1397051990,
+    "version": 1,
+    "record_size": 24,
+    "field_width": 32,
+    "field_order": [
+      "vgpr",
+      "sgpr",
+      "lds",
+      "pds"
+    ],
+    "consumer": null,
+    "validation_status": "provider_validated_runtime_unconsumed",
+    "hard_coded_resource_consumption_present": true,
+    "acceptance_status": "rejected"
+  },
+  "completion_contract_version": 1,
+  "ventus_linker_script": {
+    "path": "/home/weijiale/Code/cuda2rvv/ventus-env/install/lib/ldscripts/ventus/elf32lriscv.ld",
+    "sha256": "152e48c1847207336b1c37c0dff1ab7884bef4b67e3dd466ddee587deefb4925"
+  },
+  "ventus_crt0_input": {
+    "path": "/home/weijiale/Code/cuda2rvv/ventus-env/install/lib/crt0.o",
+    "sha256": "d7f91e69458ff90c8f28effe007b00695d8cb7ef34b7c0f36d0c6cbce220f771"
+  },
+  "ventus_libclc_input": {
+    "path": "/home/weijiale/Code/cuda2rvv/ventus-env/install/lib/riscv32clc.o",
+    "sha256": "4eabd9a57aa8c32061cbd627098359b40f4f52f66d240c0efa71cf6aec195a83"
+  },
+  "ventus_workitem_input": {
+    "path": "/home/weijiale/Code/cuda2rvv/ventus-env/install/lib/libworkitem.a",
+    "sha256": "3de658e1e104811825d08495c22be88427d6536f5257bd027a88672193beca41"
+  },
+  "ventus_kernel_entry_or_init": "_start",
+  "identity_record_notes": {
+    "refreshed_on": "2026-09-17",
+    "reason": "LinearLayout index migration (commit e584238e02) changed the tree and required a libtriton rebuild; triton_commit and libtriton_content_hash were re-read from the live worktree. triton_worktree_content_hash stays the clean-tree value because the migration is committed. External venus-env components were NOT re-read, so their recorded values still trail the live trees.",
+    "scope": "triton_commit, libtriton_content_hash",
+    "unchanged": "runtime/tool identity, resource transport, and dirty_component_content_hashes are untouched; release_valid stays false and release_blockers are unchanged"
+  }
+}

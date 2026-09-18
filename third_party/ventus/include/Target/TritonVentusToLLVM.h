@@ -20,6 +20,11 @@ Value emitWorkItemBuiltinCall(OpBuilder &rewriter, Location loc,
                               ModuleOp moduleOp, StringRef symbol,
                               Value index);
 
+// Drop the pointer-argument hints the coalescer would spend on per-thread
+// ownership (see StripPointerHints.cpp): one element per thread keeps a warp's
+// accesses contiguous, which is what this target's 32-lane vector unit wants.
+std::unique_ptr<OperationPass<ModuleOp>> createStripPointerHintsPass();
+
 // TritonGPU -> LLVM dialect conversion driven by the Ventus TargetInfo.
 // V1 baseline: elementwise / masked load-store / SPMD control flow on
 // riscv32 with warp size 32, global addrspace 1, local (shared) addrspace 3.
