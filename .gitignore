@@ -112,3 +112,7 @@ AGENTS.override.md
 third_party/ventus/tools/vecadd_baseline/vecadd_baseline
 third_party/ventus/tools/vecadd_baseline/object0.*
 third_party/ventus/tools/vecadd_baseline/vecadd_0.*
+
+# Per-worktree identity, deliberately not version controlled (README 8/9):
+# it records absolute paths and re-read external component hashes.
+third_party/ventus/toolchain/version.json
