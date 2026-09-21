@@ -133,8 +133,24 @@ git push                                             # 推工作分支（trackin
 | `lib/Dialect/TritonGPU/IR/Dialect.cpp` | 3（AMD Mfma UBSan 修复、BMM 小幅优化、legacy reshape 的 slice 编码推断——我们尚未使用 reshape） |
 | `lib/Conversion/TritonGPUToLLVM/Utility.cpp` | 2（都是 atomics 相关，本后端不支持 atomics） |
 
-**结论：不 rebase。** 另外"我们改过的文件 ∩ 上游改过的文件"为空 → 将来真要 rebase，git 层是干净的
-（但依旧必须 build + 全套测试，见 §2.1 的教训）。
+**结论：不 rebase；也不做定期 rebase（用户决定，2026-09-21）。** 需要时每次都按上表逐路径复核一次
+（`git log --oneline HEAD..origin/main -- <路径>`），有实质收益再动。另外"我们改过的文件 ∩ 上游改过的文件"
+为空 → 将来真要 rebase，git 层是干净的（但依旧必须 build + 全套测试，见 §2.1 的教训）。
+
+#### CI（2026-09-21 建立）
+
+`.github/workflows/ventus-backend.yml`，两个 job，成本与覆盖面对齐：
+
+| job | 触发 | 干什么 | 为什么是这些 |
+|---|---|---|---|
+| `pre-commit`（复用仓库自己的 `pre-commit.yml`） | push / PR / 定时 / 手动 | yapf、ruff、clang-format、mypy | 几乎无成本；ruff 的路径过滤已加入 `^third_party/ventus`，否则**后端的 Python 从未被 lint 过** |
+| `build` | PR / 定时（每周一）/ 手动，**不含 push** | `make` 构建 libtriton，再断言 ventus 绑定与我们的 pass 存在 | 后端编进 libtriton，所以"能构建"就是**核心 API 漂移**的探针（§2.1）；但它要下载 pinned LLVM 并全量编译，不适合每次 push 跑 |
+
+**后端测试套件不在 CI 里**：每个测试都需要外部 Ventus 工具链 + Spike/cyclesim（§2、§4.1），共享 runner 上
+没有。硬件相关的验证留在本地（§4.1 决定：spike 是权威）。
+
+⚠️ fork 上的 Actions 默认关闭：首次使用需在 GitHub 仓库的 Actions 页点一次 "Enable workflows"
+（`fork/main` 镜像自上游，workflow 文件随上游而来）。
 
 #### 2026-09-21 的操作记录
 
@@ -142,6 +158,8 @@ git push                                             # 推工作分支（trackin
   `backup/ventus-pre-rebase` 里）。副作用：主 worktree（`cuda2rvv/triton`）磁盘上移除了旧 main tip 里的
   Ventus 文件（`third_party/ventus/`、`python/test/unit/ventus/`、Ventus 相关 docs）——它们在分支里都在，
   只是那个 checkout 不再有；需要时 `git checkout ventus-p1-done -- third_party/ventus ...` 即可取回。
+- 4 个里程碑 tag 的说明里补上了**上游基点**（`84f99580ab`，2026-09-16），即 compat matrix 的雏形；
+  这 4 个 tag 对象被重写并 force 更新到 fork（指向的提交未变）。
 - 21 个此前未跟踪的研究文档（`docs/plans/*`，7.8 MB，含架构图）已归档到分支 `docs/ventus-plans`
   并推上 fork。它们**仍以未跟踪状态留在原 worktree**（用 plumbing 提交的，没有切换任何分支）。
 

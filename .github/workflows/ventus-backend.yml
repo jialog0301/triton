@@ -1,0 +1,104 @@
+# CI for the out-of-tree Ventus backend.
+#
+# What can run here and what cannot:
+#   * The backend is compiled as part of libtriton (`third_party/ventus` is
+#     registered in the root CMakeLists), so a plain build is the check that
+#     catches core-API drift. README 2.1 records why that matters: a rebase that
+#     is git-clean still broke at compile time (`TargetInfoBase::getMulhiFuncName`
+#     removed, `populateElementwiseOpToLLVMPatterns` losing its target argument).
+#   * The backend's test suite cannot run on shared runners: every test needs the
+#     pinned Ventus toolchain, Spike and the cycle simulator from an external
+#     install (README 2, 4.1). Those stay local; see README 2.2.
+#
+# Cost control: the build downloads the pinned LLVM and compiles libtriton, so it
+# runs on pull requests, weekly, or by hand -- not on every push to the branch.
+# Pushes only run the repository's own pre-commit gate, which is fast.
+#
+# The path filter is repeated instead of anchored on purpose: GitHub's workflow
+# parser does not expand YAML anchors, which is why the repository carries an
+# `expand-yaml-anchors` hook for integration-tests.yml.
+name: Ventus Backend
+
+on:
+  push:
+    branches: [feature/triton-ventus-v1]
+    paths:
+      - 'third_party/ventus/**'
+      - 'python/test/unit/ventus/**'
+      - '.github/workflows/ventus-backend.yml'
+      - '.pre-commit-config.yaml'
+  pull_request:
+    paths:
+      - 'third_party/ventus/**'
+      - 'python/test/unit/ventus/**'
+      - '.github/workflows/ventus-backend.yml'
+      - '.pre-commit-config.yaml'
+  workflow_dispatch:
+  schedule:
+    # Weekly, so upstream drift is noticed even while we are not pushing.
+    - cron: '0 3 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pre-commit:
+    # The repository's own gate (yapf / ruff / clang-format / mypy). ruff's path
+    # filter lists third_party/ventus alongside amd and nvidia, so this covers
+    # the backend's Python as well.
+    uses: ./.github/workflows/pre-commit.yml
+
+  build:
+    name: Build libtriton with the backend
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r python/requirements.txt
+          pip install cmake ninja
+
+      - name: Cache the pinned LLVM
+        uses: actions/cache@v6
+        with:
+          path: ~/.triton/llvm
+          key: ventus-llvm-${{ runner.os }}-${{ hashFiles('cmake/llvm-info.json') }}
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.ccache
+          key: ventus-ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ventus-ccache-${{ runner.os }}-
+
+      - name: Build (compiles third_party/ventus as well)
+        env:
+          # 4-core runners; upstream's jobs cap this the same way.
+          MAX_JOBS: 4
+          NINJA_STATUS: '[%f/%t, %es elapsed] '
+        run: make
+
+      - name: The backend's bindings built and registered
+        run: |
+          PYTHONPATH="$PWD/python" python - <<'EOF'
+          import triton._C.libtriton as libtriton
+
+          ventus = libtriton.ventus
+          status = ventus.registration_status()
+          assert status["passes"], status
+          for name in ("add_to_llvmir", "add_strip_pointer_hints"):
+              assert hasattr(ventus.passes, name), name
+          print("ventus bindings ok:", dict(status))
+          EOF
