@@ -1,13 +1,3 @@
-
-
-
-
-
-
-
-
-
-
 import hashlib
 import re
 import subprocess
@@ -19,7 +9,6 @@ from triton._C.libtriton import ir, passes, llvm
 from triton._C.libtriton import ventus
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 
-
 _TOOL_ROOT = Path("/home/weijiale/Code/cuda2rvv/ventus-env/install/bin")
 _TOOL_NAMES = ("clang", "opt", "llc", "ld.lld")
 _TOOL_PATHS = tuple((name, str(_TOOL_ROOT / name)) for name in _TOOL_NAMES)
@@ -29,10 +18,8 @@ _VENTUS_INSTALL = _TOOL_ROOT.parent
 # goldens under third_party/ventus/test/abi.
 _TARGET_TRIPLE = "riscv32"
 _TARGET_MCPU = "ventus-gpgpu"
-_TARGET_FEATURES = (
-    "+32bit,+a,+m,+relax,+zdinx,+zfinx,+zhinx,+zve32f,+zve32x,+zvl32b,"
-    "-64bit,-save-restore"
-)
+_TARGET_FEATURES = ("+32bit,+a,+m,+relax,+zdinx,+zfinx,+zhinx,+zve32f,+zve32x,+zvl32b,"
+                    "-64bit,-save-restore")
 
 # Standard triton.compile option keys with no Ventus meaning in V1. They are
 # accepted (so the generic compile path works unchanged) and ignored.
@@ -95,8 +82,7 @@ class VentusOptions:
         object.__setattr__(self, "tool_paths", tuple((name, tool_paths[name]) for name in _TOOL_NAMES))
 
     def hash(self):
-        key = "_".join(
-            [f"{name}-{val}" for name, val in sorted(self.__dict__.items())])
+        key = "_".join([f"{name}-{val}" for name, val in sorted(self.__dict__.items())])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
@@ -113,13 +99,11 @@ def _sha256_file(path: Path) -> str:
 
 
 def _apply_ventus_kernel_convention(text: str, kernel_name: str) -> str:
-    pattern = re.compile(_KERNEL_DEFINE.pattern.format(name=re.escape(kernel_name)),
-                         re.M)
+    pattern = re.compile(_KERNEL_DEFINE.pattern.format(name=re.escape(kernel_name)), re.M)
     matches = pattern.findall(text)
     if len(matches) != 1:
-        raise RuntimeError(
-            f"Ventus: expected exactly one definition of kernel {kernel_name!r} "
-            f"in the emitted LLVM IR, found {len(matches)}")
+        raise RuntimeError(f"Ventus: expected exactly one definition of kernel {kernel_name!r} "
+                           f"in the emitted LLVM IR, found {len(matches)}")
     return pattern.sub(f"define ventus_kernel void @{kernel_name}(", text)
 
 
@@ -191,8 +175,7 @@ class VentusBackend(BaseBackend):
     @staticmethod
     def make_ttgir(mod, metadata, options):
         pm = ir.pass_manager(mod.context)
-        passes.ttir.add_convert_to_ttgpuir(
-            pm, "ventus", options.num_warps, options.warp_size, 1)
+        passes.ttir.add_convert_to_ttgpuir(pm, "ventus", options.num_warps, options.warp_size, 1)
         # Before the layout passes: on this target one element per thread keeps a
         # warp's accesses contiguous (README 4.4 measures the alternative at 2.7x
         # slower), and the coalescer reads exactly these hints.
@@ -238,17 +221,14 @@ class VentusBackend(BaseBackend):
         ret = str(llvm_mod)
         del llvm_mod
         del context
-        return _strip_or_disjoint(
-            _apply_ventus_kernel_convention(ret, entry_name))
+        return _strip_or_disjoint(_apply_ventus_kernel_convention(ret, entry_name))
 
     @staticmethod
     def _run_tool(argv):
         result = subprocess.run(argv, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(
-                f"Ventus tool failed ({result.returncode}): {' '.join(argv)}\n"
-                f"stderr:\n{result.stderr}"
-            )
+            raise RuntimeError(f"Ventus tool failed ({result.returncode}): {' '.join(argv)}\n"
+                               f"stderr:\n{result.stderr}")
         return result
 
     @staticmethod
@@ -260,8 +240,7 @@ class VentusBackend(BaseBackend):
         (`backend/manifest.py`) records the argv/stdout/stderr/status that
         actually produced this artifact rather than re-running the tools.
         """
-        result = subprocess.run([str(a) for a in argv], capture_output=True,
-                                text=True)
+        result = subprocess.run([str(a) for a in argv], capture_output=True, text=True)
         evidence = {
             "executable": str(argv[0]),
             "argv": [str(a) for a in argv],
@@ -271,10 +250,8 @@ class VentusBackend(BaseBackend):
             "tool_identity": f"{argv[0]}@{_sha256_file(Path(argv[0]))}",
         }
         if result.returncode != 0:
-            raise RuntimeError(
-                f"Ventus tool failed ({result.returncode}): {' '.join(evidence['argv'])}\n"
-                f"stderr:\n{result.stderr}"
-            )
+            raise RuntimeError(f"Ventus tool failed ({result.returncode}): {' '.join(evidence['argv'])}\n"
+                               f"stderr:\n{result.stderr}")
         return result, evidence
 
     @staticmethod
@@ -302,13 +279,21 @@ class VentusBackend(BaseBackend):
             # backend sees it. Gate evidence is kept for the artifact manifest.
             ll.write_text(src)
             _, opt_evidence = VentusBackend._run_gate([
-                tools["opt"], "-passes=verify", "-S", str(ll),
-                "-o", str(checked_ll),
+                tools["opt"],
+                "-passes=verify",
+                "-S",
+                str(ll),
+                "-o",
+                str(checked_ll),
             ])
             _, llc_evidence = VentusBackend._run_gate([
-                tools["llc"], f"-mtriple={options.target_triple}",
-                f"-mcpu={_TARGET_MCPU}", "-filetype=obj",
-                str(checked_ll), "-o", str(obj),
+                tools["llc"],
+                f"-mtriple={options.target_triple}",
+                f"-mcpu={_TARGET_MCPU}",
+                "-filetype=obj",
+                str(checked_ll),
+                "-o",
+                str(obj),
             ])
             # `riscv32clc.o` is a 22 MB object (all OpenCL builtins, not an
             # archive), so an unpruned link pulls the whole builtins library
@@ -317,28 +302,37 @@ class VentusBackend(BaseBackend):
             # references it: the runtime looks it up by symbol name, so a
             # plain gc-sections link would silently delete it.
             link_argv = [
-                tools["ld.lld"], "-T", str(linker_script),
-                "--gc-sections", "-u", metadata["name"],
-                str(link_inputs[0]), str(obj), str(link_inputs[1]),
-                str(link_inputs[2]), "-o", str(elf),
+                tools["ld.lld"],
+                "-T",
+                str(linker_script),
+                "--gc-sections",
+                "-u",
+                metadata["name"],
+                str(link_inputs[0]),
+                str(obj),
+                str(link_inputs[1]),
+                str(link_inputs[2]),
+                "-o",
+                str(elf),
             ]
             _, lld_evidence = VentusBackend._run_gate(link_argv)
 
             metadata["ventus_gates"] = {
-                "llvm_ir_hash": _sha256_file(checked_ll),
-                "object_hash": _sha256_file(obj),
-                "elf_hash": _sha256_file(elf),
-                "opt": opt_evidence,
-                "llc": llc_evidence,
-                "lld": lld_evidence,
-                "link_inputs": [
-                    {"kind": kind, "path": str(path),
-                     "content_hash": _sha256_file(path)}
-                    for kind, path in (("linker_script", linker_script),
-                                       ("crt0", link_inputs[0]),
-                                       ("libclc", link_inputs[1]),
-                                       ("workitem", link_inputs[2]))
-                ],
+                "llvm_ir_hash":
+                _sha256_file(checked_ll),
+                "object_hash":
+                _sha256_file(obj),
+                "elf_hash":
+                _sha256_file(elf),
+                "opt":
+                opt_evidence,
+                "llc":
+                llc_evidence,
+                "lld":
+                lld_evidence,
+                "link_inputs": [{"kind": kind, "path": str(path), "content_hash": _sha256_file(path)}
+                                for kind, path in (("linker_script", linker_script), ("crt0", link_inputs[0]),
+                                                   ("libclc", link_inputs[1]), ("workitem", link_inputs[2]))],
             }
             return elf.read_bytes()
 

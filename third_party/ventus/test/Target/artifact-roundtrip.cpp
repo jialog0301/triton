@@ -34,18 +34,24 @@ static VentusKernelMetadata makeMetadata() {
       VentusKernelArgument::buffer(2, 8, 4, 4),
       VentusKernelArgument::scalarI32(12),
   };
-  metadata.grid = {1, {32, 1, 1}, {32, 1, 1}, {0, 0, 0}, true,
-                   "global_x=grid_x*local_x"};
+  metadata.grid = {1,         {32, 1, 1}, {32, 1, 1},
+                   {0, 0, 0}, true,       "global_x=grid_x*local_x"};
   metadata.constraints = {{"masked_as1"}, "vector_add", "f32", "blocked",
-                          {32}, true, ""};
+                          {32},           true,         ""};
   metadata.resources = {0, 0, 8, 12, 0, 0, 128, 128, 131072, 131072, true};
-  metadata.rawResource = {0x53455256, 1, 24, {8, 12, 0, 0}, 1,
-                          "Ventus LLVM AsmPrinter", true};
+  metadata.rawResource = {
+      0x53455256, 1, 24, {8, 12, 0, 0}, 1, "Ventus LLVM AsmPrinter", true};
   metadata.resourceUnits = {"bytes_per_cta", "bytes_per_work_item",
                             "32_bit_slots_per_wavefront",
                             "wavefront_wide_slots_per_wavefront"};
-  metadata.capability = {1, "capability-hash", "physical_device_values",
-                         "rtl-hash", 1, true, true, true};
+  metadata.capability = {1,
+                         "capability-hash",
+                         "physical_device_values",
+                         "rtl-hash",
+                         1,
+                         true,
+                         true,
+                         true};
   metadata.artifacts = {{"ttir", "kernel.ttir", "ttir-hash"},
                         {"ttgir", "kernel.ttgir", "ttgir-hash"},
                         {"llvm_ir", "kernel.ventus.ll", "llvm-hash"},
@@ -54,20 +60,35 @@ static VentusKernelMetadata makeMetadata() {
                         {"launcher_input", "launcher.json", "launcher-hash"},
                         {"test_result", "result.json", "test-hash"}};
   metadata.resultRecords = {"fallback=none", "skip=none", "tolerance=exact"};
-  metadata.compatibility = {
-      "kernel.ventus.ll", "ll-hash", true, "checker=pass",
-      {"/opt", {"/opt", "-passes=verify", "kernel.ventus.ll"}, "", "", 0,
-       "opt-hash"},
-      {"/llc", {"/llc", "-mcpu=ventus-gpgpu", "kernel.ventus.ll"}, "", "", 0,
-       "llc-hash"},
-      "object-hash"};
-  metadata.link = {{"/ld.lld", {"/ld.lld", "-T", "/link.ld", "kernel.o"},
-                    "", "", 0, "lld-hash"},
+  metadata.compatibility = {"kernel.ventus.ll",
+                            "ll-hash",
+                            true,
+                            "checker=pass",
+                            {"/opt",
+                             {"/opt", "-passes=verify", "kernel.ventus.ll"},
+                             "",
+                             "",
+                             0,
+                             "opt-hash"},
+                            {"/llc",
+                             {"/llc", "-mcpu=ventus-gpgpu", "kernel.ventus.ll"},
+                             "",
+                             "",
+                             0,
+                             "llc-hash"},
+                            "object-hash"};
+  metadata.link = {{"/ld.lld",
+                    {"/ld.lld", "-T", "/link.ld", "kernel.o"},
+                    "",
+                    "",
+                    0,
+                    "lld-hash"},
                    {{"linker_script", "/link.ld", "link-hash"},
                     {"crt0", "/crt0.o", "crt0-hash"},
                     {"libclc", "/riscv32clc.o", "libclc-hash"},
                     {"workitem", "/libworkitem.a", "workitem-hash"}},
-                   "elf-hash", true};
+                   "elf-hash",
+                   true};
   metadata.hardCodedResourceConsumptionRejected = true;
   return metadata;
 }
@@ -109,22 +130,26 @@ int main() {
 
   missing = metadata;
   missing.toolchain.llvm.contentHash.clear();
-  if (!check(!validate(missing, context), "missing toolchain identity was accepted"))
+  if (!check(!validate(missing, context),
+             "missing toolchain identity was accepted"))
     return 1;
 
   auto badArguments = metadata;
   badArguments.arguments[1].offset = 2;
-  if (!check(!validate(badArguments, context), "overlapping arguments were accepted"))
+  if (!check(!validate(badArguments, context),
+             "overlapping arguments were accepted"))
     return 1;
 
   auto badGeometry = metadata;
   badGeometry.grid.localSize = {48, 1, 1};
-  if (!check(!validate(badGeometry, context), "illegal local size was accepted"))
+  if (!check(!validate(badGeometry, context),
+             "illegal local size was accepted"))
     return 1;
 
   badGeometry = metadata;
   badGeometry.grid.globalSize = {33, 1, 1};
-  if (!check(!validate(badGeometry, context), "inconsistent global size was accepted"))
+  if (!check(!validate(badGeometry, context),
+             "inconsistent global size was accepted"))
     return 1;
 
   auto badAbi = metadata;
@@ -144,12 +169,14 @@ int main() {
 
   auto resourceMismatch = metadata;
   resourceMismatch.rawResource.values[0] += 1;
-  if (!check(!validate(resourceMismatch, context), "raw resource mismatch was accepted"))
+  if (!check(!validate(resourceMismatch, context),
+             "raw resource mismatch was accepted"))
     return 1;
 
   resourceMismatch = metadata;
   resourceMismatch.resourceUnits.lds = "words_per_cta";
-  if (!check(!validate(resourceMismatch, context), "invalid resource units were accepted"))
+  if (!check(!validate(resourceMismatch, context),
+             "invalid resource units were accepted"))
     return 1;
 
   auto failedGate = metadata;
@@ -159,7 +186,8 @@ int main() {
 
   auto missingLink = metadata;
   missingLink.link.validated = false;
-  if (!check(!validate(missingLink, context), "missing link evidence was accepted"))
+  if (!check(!validate(missingLink, context),
+             "missing link evidence was accepted"))
     return 1;
 
   auto mmaMismatch = metadata;
@@ -173,14 +201,16 @@ int main() {
   mmaMismatch.constraints.requiredFeatures.push_back("VentusMmaProfileA");
   mmaMismatch.constraints.mmaProfileHash = "rtl-hash";
   mmaMismatch.grid.localSize = {64, 1, 1};
-  if (!check(!validate(mmaMismatch, context), "64-lane MMA geometry was accepted"))
+  if (!check(!validate(mmaMismatch, context),
+             "64-lane MMA geometry was accepted"))
     return 1;
 
   mmaMismatch = metadata;
   mmaMismatch.constraints.requiredFeatures.push_back("VentusMmaProfileA");
   mmaMismatch.constraints.mmaProfileHash = "rtl-hash";
   mmaMismatch.capability.rtlProfileHash = "other-rtl";
-  if (!check(!validate(mmaMismatch, context), "mismatched RTL capability was accepted"))
+  if (!check(!validate(mmaMismatch, context),
+             "mismatched RTL capability was accepted"))
     return 1;
 
   auto malformed = serialized;
@@ -193,9 +223,8 @@ int main() {
     return 1;
 
   const std::vector<uint8_t> resourceBytes = {
-      0x56, 0x52, 0x45, 0x53, 0x01, 0x00, 0x18, 0x00,
-      0x08, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00,
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+      0x56, 0x52, 0x45, 0x53, 0x01, 0x00, 0x18, 0x00, 0x08, 0x00, 0x00, 0x00,
+      0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   auto raw = parseResourceRecord(resourceBytes, true);
   if (!check(raw && raw->values == metadata.rawResource.values,
              "resource bytes did not parse"))

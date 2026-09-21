@@ -17,8 +17,7 @@ namespace mlir::triton::ventus {
 // Emit a convergent call to an OpenCL work-item builtin (e.g. the mangled
 // `_Z12get_local_idj`), creating the declaration in the module if needed.
 Value emitWorkItemBuiltinCall(OpBuilder &rewriter, Location loc,
-                              ModuleOp moduleOp, StringRef symbol,
-                              Value index);
+                              ModuleOp moduleOp, StringRef symbol, Value index);
 
 // Drop the pointer-argument hints the coalescer would spend on per-thread
 // ownership (see StripPointerHints.cpp): one element per thread keeps a warp's

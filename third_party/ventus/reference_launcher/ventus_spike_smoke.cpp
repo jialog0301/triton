@@ -73,8 +73,7 @@ void usage(const char *argv0) {
 
 uint64_t parse_u64(const std::string &value, const char *name) {
   size_t consumed = 0;
-  int base = value.compare(0, 2, "0x") == 0 ||
-                     value.compare(0, 2, "0X") == 0
+  int base = value.compare(0, 2, "0x") == 0 || value.compare(0, 2, "0X") == 0
                  ? 16
                  : 10;
   uint64_t result = std::stoull(value, &consumed, base);
@@ -84,7 +83,7 @@ uint64_t parse_u64(const std::string &value, const char *name) {
 }
 
 std::array<uint64_t, 3> parse_triplet(const std::string &value,
-                                       const char *name) {
+                                      const char *name) {
   std::array<uint64_t, 3> result{};
   std::stringstream stream(value);
   std::string part;
@@ -222,10 +221,10 @@ void write_log(const Config &config, const std::string &status,
       << "  \"elf\": \"" << config.elf << "\",\n"
       << "  \"elf_sha256\": \"" << sha256(config.elf) << "\",\n"
       << "  \"entry\": " << config.entry << ",\n"
-      << "  \"grid\": [" << config.grid[0] << ", " << config.grid[1]
-      << ", " << config.grid[2] << "],\n"
-      << "  \"local\": [" << config.local[0] << ", " << config.local[1]
-      << ", " << config.local[2] << "],\n"
+      << "  \"grid\": [" << config.grid[0] << ", " << config.grid[1] << ", "
+      << config.grid[2] << "],\n"
+      << "  \"local\": [" << config.local[0] << ", " << config.local[1] << ", "
+      << config.local[2] << "],\n"
       << "  \"lds_size\": " << config.lds << ",\n"
       << "  \"pds_size\": " << config.pds << ",\n"
       << "  \"timeout_ms\": " << config.timeout_ms << "\n"
@@ -280,9 +279,10 @@ int run_kernel(const Config &config) {
     const std::vector<uint64_t> &kernel_arguments = input_addresses;
     const uint64_t warp_size = 8;
     const uint64_t warp_count = config.local[0] / warp_size;
-    const uint64_t metadata_address = allocate(kMetadataWords * sizeof(uint32_t));
-    const uint64_t buffer_base_address = allocate(
-        kernel_arguments.size() * sizeof(uint32_t));
+    const uint64_t metadata_address =
+        allocate(kMetadataWords * sizeof(uint32_t));
+    const uint64_t buffer_base_address =
+        allocate(kernel_arguments.size() * sizeof(uint32_t));
     std::vector<uint32_t> buffer_base;
     for (uint64_t address : kernel_arguments)
       buffer_base.push_back(static_cast<uint32_t>(address));
@@ -302,9 +302,16 @@ int run_kernel(const Config &config) {
       throw std::runtime_error("metadata upload failed");
 
     uint64_t groups[3] = {config.grid[0], config.grid[1], config.grid[2]};
-    MetaData driver_metadata{0, {groups[0], groups[1], groups[2]},
-                             warp_size, warp_count, metadata_address, config.lds,
-                             config.pds, config.sgpr, config.vgpr, pds_base};
+    MetaData driver_metadata{0,
+                             {groups[0], groups[1], groups[2]},
+                             warp_size,
+                             warp_count,
+                             metadata_address,
+                             config.lds,
+                             config.pds,
+                             config.sgpr,
+                             config.vgpr,
+                             pds_base};
     if (vt_upload_kernel_file(device, config.elf.c_str(), 0) != 0)
       throw std::runtime_error("vt_upload_kernel_file failed");
     if (vt_start(device, &driver_metadata, 0) != 0)
@@ -338,10 +345,10 @@ int main(int argc, char **argv) {
     Config config = parse_args(argc, argv);
     if (!config.args_log.empty()) {
       std::ofstream args(config.args_log);
-      args << "elf=" << config.elf << "\nentry=0x" << std::hex
-           << config.entry << std::dec << "\ngrid=" << config.grid[0] << ","
-           << config.grid[1] << "," << config.grid[2] << "\nlocal="
-           << config.local[0] << "," << config.local[1] << "," << config.local[2]
+      args << "elf=" << config.elf << "\nentry=0x" << std::hex << config.entry
+           << std::dec << "\ngrid=" << config.grid[0] << "," << config.grid[1]
+           << "," << config.grid[2] << "\nlocal=" << config.local[0] << ","
+           << config.local[1] << "," << config.local[2]
            << "\nlds_size=" << config.lds << "\npds_size=" << config.pds
            << "\n";
     }

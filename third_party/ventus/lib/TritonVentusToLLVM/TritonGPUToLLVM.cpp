@@ -103,8 +103,8 @@ public:
                   ProgramIDDim axis) const override {
     TritonLLVMOpBuilder b(loc, rewriter);
     auto axisValue = b.i32_val(static_cast<int>(axis));
-    return emitWorkItemBuiltinCall(rewriter, loc, moduleOp,
-                                   kWorkGroupIdBuiltin, axisValue);
+    return emitWorkItemBuiltinCall(rewriter, loc, moduleOp, kWorkGroupIdBuiltin,
+                                   axisValue);
   }
   StringRef getAtomicSyncScope(MemSyncScope scope) const override {
     switch (scope) {
@@ -119,7 +119,8 @@ public:
     llvm_unreachable("unknown memory synchronization scope");
   }
 
-  void barrier(Location, RewriterBase &, triton::gpu::AddrSpace) const override {
+  void barrier(Location, RewriterBase &,
+               triton::gpu::AddrSpace) const override {
     // Milestone 2 lowers this to llvm.riscv.ventus.barrier.
     unsupported("barrier");
   }
@@ -239,8 +240,8 @@ struct GpuWarpIdConversion
                                            kWorkItemIdBuiltin, b.i32_val(0));
     if (!localId)
       return failure();
-    rewriter.replaceOpWithNewOp<arith::DivUIOp>(
-        op, localId, b.i32_val(threadsPerWarp));
+    rewriter.replaceOpWithNewOp<arith::DivUIOp>(op, localId,
+                                                b.i32_val(threadsPerWarp));
     return success();
   }
 };
@@ -260,8 +261,7 @@ struct VentusFuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
   matchAndRewrite(triton::FuncOp funcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     FailureOr<LLVM::LLVMFuncOp> maybeNewFuncOp =
-        mlir::convertFuncOpToLLVMFuncOp(funcOp, rewriter,
-                                        *getTypeConverter());
+        mlir::convertFuncOpToLLVMFuncOp(funcOp, rewriter, *getTypeConverter());
     if (failed(maybeNewFuncOp))
       return failure();
     LLVM::LLVMFuncOp newFuncOp = *maybeNewFuncOp;
@@ -353,8 +353,8 @@ struct ConvertTritonGPUToVentusLLVM
                                                  benefit);
       mlir::triton::populateSPMDOpToLLVMPattern(typeConverter, patterns,
                                                 targetInfo, benefit);
-      mlir::triton::populateControlFlowOpToLLVMPattern(
-          typeConverter, patterns, targetInfo, benefit);
+      mlir::triton::populateControlFlowOpToLLVMPattern(typeConverter, patterns,
+                                                       targetInfo, benefit);
       mlir::triton::populateAssertOpToLLVMPattern(typeConverter, patterns,
                                                   targetInfo, benefit);
       patterns.add<GpuThreadIdConversion, GpuWarpIdConversion>(typeConverter,
@@ -412,8 +412,7 @@ void finalizeLLVMModule(llvm::Module &module) {
   module.setTargetTriple(llvm::Triple(kTargetTriple));
   module.setDataLayout(kTargetDataLayout);
 
-  auto *i32Ty =
-      llvm::IntegerType::getInt32Ty(module.getContext());
+  auto *i32Ty = llvm::IntegerType::getInt32Ty(module.getContext());
   // Module flags observed in the verified ABI goldens.
   module.addModuleFlag(llvm::Module::Error, "wchar_size", 4);
   module.addModuleFlag(llvm::Module::Error, "target-abi",
@@ -428,8 +427,8 @@ void finalizeLLVMModule(llvm::Module &module) {
       kernel = &fn;
     fn.addFnAttr("target-cpu", kTargetCpu);
     fn.addFnAttr("target-features", kTargetFeatures);
-    fn.addFnAttr(llvm::Attribute::getWithVScaleRangeArgs(
-        module.getContext(), 1, 2048));
+    fn.addFnAttr(
+        llvm::Attribute::getWithVScaleRangeArgs(module.getContext(), 1, 2048));
   }
 
   if (!kernel)
@@ -445,17 +444,14 @@ void finalizeLLVMModule(llvm::Module &module) {
   // argument lives in the global address space, everything else is a plain
   // scalar.
   llvm::LLVMContext &ctx = module.getContext();
-  llvm::SmallVector<llvm::Metadata *> addrSpaces, accessQuals, types,
-      typeQuals;
+  llvm::SmallVector<llvm::Metadata *> addrSpaces, accessQuals, types, typeQuals;
   for (const llvm::Argument &arg : kernel->args()) {
     uint32_t space = 0;
-    if (auto *ptrTy =
-            llvm::dyn_cast<llvm::PointerType>(arg.getType()))
+    if (auto *ptrTy = llvm::dyn_cast<llvm::PointerType>(arg.getType()))
       space = ptrTy->getAddressSpace();
-    addrSpaces.push_back(llvm::ConstantAsMetadata::get(
-        llvm::ConstantInt::get(i32Ty, space)));
-    accessQuals.push_back(
-        llvm::MDString::get(ctx, "none"));
+    addrSpaces.push_back(
+        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32Ty, space)));
+    accessQuals.push_back(llvm::MDString::get(ctx, "none"));
     std::string typeName;
     llvm::raw_string_ostream os(typeName);
     arg.getType()->print(os);

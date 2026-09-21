@@ -5,7 +5,6 @@ import pytest
 import subprocess
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[4]
 ABI_DIR = REPO_ROOT / "third_party/ventus/test/abi"
 CHECKER_PATH = ABI_DIR / "check_golden.py"
@@ -35,9 +34,7 @@ def test_every_opencl_source_has_a_valid_llvm_golden():
     assert facts["vector_add"]["argument_address_spaces"] == [1, 1, 1, 0]
     assert facts["masked_copy"]["argument_address_spaces"] == [1, 1, 0]
     assert facts["barrier_local"]["argument_address_spaces"] == [1, 1]
-    assert facts["barrier_local"]["barrier_intrinsics"] == [
-        "llvm.riscv.ventus.barrier"
-    ]
+    assert facts["barrier_local"]["barrier_intrinsics"] == ["llvm.riscv.ventus.barrier"]
     assert facts["vector_add"]["builtin_declarations"] == ["_Z13get_global_idj"]
     assert facts["masked_copy"]["builtin_declarations"] == ["_Z13get_global_idj"]
     assert facts["barrier_local"]["builtin_declarations"] == [
@@ -64,9 +61,7 @@ def test_regenerated_goldens_match_normalized_abi_facts(tmp_path):
 
 
 def test_pinned_link_inputs_supply_observed_abi_roles():
-    identity = json.loads(
-        (REPO_ROOT / "third_party/ventus/toolchain/version.json").read_text()
-    )
+    identity = json.loads((REPO_ROOT / "third_party/ventus/toolchain/version.json").read_text())
     linker_script = Path(identity["ventus_linker_script"]["path"])
     assert "ENTRY(_start)" in linker_script.read_text()
 
@@ -82,10 +77,10 @@ def test_pinned_link_inputs_supply_observed_abi_roles():
     ).stdout
     assert f"{crt0}: 00000000 T _start" in symbols
     for builtin in (
-        "__builtin_riscv_global_id_x",
-        "__builtin_riscv_workgroup_id_x",
-        "__builtin_riscv_workitem_id_x",
-        "__builtin_riscv_local_size_x",
+            "__builtin_riscv_global_id_x",
+            "__builtin_riscv_workgroup_id_x",
+            "__builtin_riscv_workitem_id_x",
+            "__builtin_riscv_local_size_x",
     ):
         assert f" T {builtin}" in symbols
     assert f"{libclc}:" in symbols

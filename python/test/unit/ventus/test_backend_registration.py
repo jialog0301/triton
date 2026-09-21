@@ -13,7 +13,6 @@ from triton.backends import backends
 from triton.backends.compiler import GPUTarget, Language
 from triton.compiler.compiler import make_backend
 
-
 REPO_ROOT = Path(__file__).resolve().parents[4]
 VENTUS_ROOT = REPO_ROOT / "third_party/ventus"
 TOOL_ROOT = Path("/home/weijiale/Code/cuda2rvv/ventus-env/install/bin")
@@ -49,8 +48,9 @@ def ventus_backend(monkeypatch, setup_contract, tmp_path):
     assert Path(descriptor.backend_dir) == VENTUS_ROOT / "backend"
     install_dir = Path(descriptor.install_dir)
     assert install_dir == REPO_ROOT / "python/triton/backends/ventus"
-    ventus_entry_points = [value for value in setup_kwargs["entry_points"]["triton.backends"]
-                           if value.startswith("ventus =")]
+    ventus_entry_points = [
+        value for value in setup_kwargs["entry_points"]["triton.backends"] if value.startswith("ventus =")
+    ]
     assert ventus_entry_points == ["ventus = triton.backends.ventus"]
 
     isolated_backends = tmp_path / "triton/backends"
@@ -59,9 +59,8 @@ def ventus_backend(monkeypatch, setup_contract, tmp_path):
     monkeypatch.setattr(triton_backends, "__path__", [str(isolated_backends), *triton_backends.__path__])
     importlib.invalidate_caches()
     try:
-        entry_points = EntryPoints(
-            (EntryPoint(name="ventus", value="triton.backends.ventus", group="triton.backends"), )
-        )
+        entry_points = EntryPoints((EntryPoint(name="ventus", value="triton.backends.ventus",
+                                               group="triton.backends"), ))
         monkeypatch.setattr(triton_backends, "entry_points", lambda: entry_points)
         discovered = triton_backends._discover_backends()
         registration = discovered["ventus"]
@@ -91,15 +90,12 @@ def test_backend_registration_and_scaffolding(ventus_backend):
     assert options.target_triple == "riscv32"
     assert options.pointer_width == 32
     assert options.abi_revision == 1
-    assert dict(options.tool_paths) == {
-        name: str(TOOL_ROOT / name) for name in ("clang", "opt", "llc", "ld.lld")
-    }
+    assert dict(options.tool_paths) == {name: str(TOOL_ROOT / name) for name in ("clang", "opt", "llc", "ld.lld")}
     assert all(Path(path).is_file() for path in dict(options.tool_paths).values())
     assert hash(options)
     assert not any(isinstance(value, GPUTarget) for value in options.__dict__.values())
 
-    assert backend.pack_metadata(
-        type("Metadata", (), {"num_warps": 2, "num_stages": 3, "shared": 0})()) == (2, 3, 0)
+    assert backend.pack_metadata(type("Metadata", (), {"num_warps": 2, "num_stages": 3, "shared": 0})()) == (2, 3, 0)
     codegen_fns = backend.get_codegen_implementation(options)
     assert codegen_fns["min_dot_size"](None, None) == (1, 1, 1)
     stages = {}

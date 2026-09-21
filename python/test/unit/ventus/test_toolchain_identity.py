@@ -8,7 +8,6 @@ from pathlib import Path
 import triton
 import triton._C.libtriton as libtriton
 
-
 REPO_ROOT = Path(__file__).resolve().parents[4]
 IDENTITY_PATH = REPO_ROOT / "third_party/ventus/toolchain/version.json"
 LLVM_INFO_PATH = REPO_ROOT / "cmake/llvm-info.json"
@@ -67,15 +66,11 @@ def _sha256(path):
 
 
 def _git_output(*args):
-    return subprocess.run(
-        ["git", *args], cwd=REPO_ROOT, check=True, capture_output=True, text=True
-    ).stdout.strip()
+    return subprocess.run(["git", *args], cwd=REPO_ROOT, check=True, capture_output=True, text=True).stdout.strip()
 
 
 def _git_output_at(path, *args):
-    return subprocess.run(
-        ["git", *args], cwd=path, check=True, capture_output=True, text=True
-    ).stdout.strip()
+    return subprocess.run(["git", *args], cwd=path, check=True, capture_output=True, text=True).stdout.strip()
 
 
 def _dirty_content_hash(path, excluded=()):
@@ -87,8 +82,7 @@ def _dirty_content_hash(path, excluded=()):
             cwd=path,
             check=True,
             capture_output=True,
-        ).stdout
-    ).hexdigest()
+        ).stdout).hexdigest()
     names = subprocess.run(
         ["git", "ls-files", "--others", "--exclude-standard", "-z"],
         cwd=path,
@@ -99,19 +93,16 @@ def _dirty_content_hash(path, excluded=()):
     if not names:
         return tracked
     untracked_records = b"".join(
-        hashlib.sha256((path / name.decode()).read_bytes()).hexdigest().encode()
-        + b"  "
-        + name
-        + b"\n"
-        for name in names
-    )
+        hashlib.sha256((path / name.decode()).read_bytes()).hexdigest().encode() + b"  " + name + b"\n"
+        for name in names)
     untracked = hashlib.sha256(untracked_records).hexdigest()
     return hashlib.sha256(f"{tracked}\n{untracked}\n".encode()).hexdigest()
 
 
 def _elf_field(path, pattern):
     output = subprocess.run(
-        ["readelf", "-n" if pattern == "Build ID" else "-d", str(path)],
+        ["readelf", "-n" if pattern == "Build ID" else "-d",
+         str(path)],
         check=True,
         capture_output=True,
         text=True,
@@ -147,8 +138,7 @@ def test_toolchain_identity_matches_verified_environment():
 
     assert identity["triton_commit"] == _git_output("rev-parse", "HEAD")
     assert identity["triton_worktree_content_hash"] == _dirty_content_hash(
-        REPO_ROOT, {"third_party/ventus/toolchain/version.json"}
-    )
+        REPO_ROOT, {"third_party/ventus/toolchain/version.json"})
     assert identity["triton_consumer_llvm_hash"] == llvm_info["llvm_hash"]
     assert identity["triton_consumer_llvm_build"] == llvm_info["build_number"]
     assert Path(identity["triton_home"]).resolve() == Path(os.environ["TRITON_HOME"]).resolve()
@@ -156,9 +146,8 @@ def test_toolchain_identity_matches_verified_environment():
     cache_path = Path(identity["triton_llvm_cache_path"])
     assert cache_path.name == expected_cache
     assert cache_path.resolve() == (Path(os.environ["TRITON_HOME"]) / ".triton/llvm" / expected_cache).resolve()
-    assert llvm_info["llvm_hash"] in subprocess.run(
-        [str(cache_path / "bin/clang"), "--version"], check=True, capture_output=True, text=True
-    ).stdout
+    assert llvm_info["llvm_hash"] in subprocess.run([str(cache_path / "bin/clang"), "--version"], check=True,
+                                                    capture_output=True, text=True).stdout
 
     assert Path(identity["python_executable"]).resolve() == Path(sys.executable).resolve()
     assert identity["python_version"] == sys.version
@@ -201,9 +190,7 @@ def test_toolchain_identity_matches_verified_environment():
         "testcases": "testcases",
     }
     for component, relative_path in dirty_paths.items():
-        assert identity["dirty_component_content_hashes"][component] == _dirty_content_hash(
-            ventus_root / relative_path
-        )
+        assert identity["dirty_component_content_hashes"][component] == _dirty_content_hash(ventus_root / relative_path)
 
     required_tools = {"clang", "opt", "llc", "ld.lld", "spike"}
     assert required_tools <= identity["tool_binary_hashes"].keys()
@@ -241,14 +228,8 @@ def test_toolchain_identity_matches_verified_environment():
     assert backend["sha256"] == _sha256(backend_path)
     assert backend["build_id"] == _elf_field(backend_path, "Build ID")
     assert backend["runpath"] == _elf_field(backend_path, "RUNPATH")
-    generation_material = (
-        identity["dirty_component_content_hashes"]["llvm"]
-        + "\n"
-        + backend["sha256"]
-        + "\n"
-        + backend["build_id"]
-        + "\n"
-    ).encode()
+    generation_material = (identity["dirty_component_content_hashes"]["llvm"] + "\n" + backend["sha256"] + "\n" +
+                           backend["build_id"] + "\n").encode()
     assert backend["generation_id"] == hashlib.sha256(generation_material).hexdigest()
 
     assert identity["runtime_build_manifest"]["coordinated"] is False
@@ -259,10 +240,10 @@ def test_toolchain_identity_matches_verified_environment():
     assert identity["runtime_install_manifest"]["status"] == "observed_not_proven"
 
     for key in (
-        "ventus_linker_script",
-        "ventus_crt0_input",
-        "ventus_libclc_input",
-        "ventus_workitem_input",
+            "ventus_linker_script",
+            "ventus_crt0_input",
+            "ventus_libclc_input",
+            "ventus_workitem_input",
     ):
         record = identity[key]
         path = Path(record["path"])

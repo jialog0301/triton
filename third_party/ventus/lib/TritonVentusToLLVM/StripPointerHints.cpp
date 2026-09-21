@@ -17,9 +17,9 @@
 // what the hardware's 32-lane vector unit wants.
 //
 // This is a target preference with no upstream hook: `tritongpu-coalesce` takes
-// no target parameters, so a backend that wants per-thread width 1 has to say so
-// before the pass runs. If upstream ever adds such a hook, this pass should be
-// replaced by it.
+// no target parameters, so a backend that wants per-thread width 1 has to say
+// so before the pass runs. If upstream ever adds such a hook, this pass should
+// be replaced by it.
 #include "Target/TritonVentusToLLVM.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -30,12 +30,12 @@
 namespace mlir::triton::ventus {
 namespace {
 
-// Hints that steer per-thread ownership or per-thread contiguity. `tt.contiguity`
-// and `tt.constancy` are included because the coalescer consults them the same
-// way when it picks `sizePerThread`.
-constexpr StringLiteral kPointerHints[] = {
-    "tt.divisibility", "tt.contiguity", "tt.constancy", "tt.max_contiguous",
-    "tt.multiple_of"};
+// Hints that steer per-thread ownership or per-thread contiguity.
+// `tt.contiguity` and `tt.constancy` are included because the coalescer
+// consults them the same way when it picks `sizePerThread`.
+constexpr StringLiteral kPointerHints[] = {"tt.divisibility", "tt.contiguity",
+                                           "tt.constancy", "tt.max_contiguous",
+                                           "tt.multiple_of"};
 
 struct StripPointerHints
     : public PassWrapper<StripPointerHints, OperationPass<ModuleOp>> {

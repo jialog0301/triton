@@ -114,7 +114,7 @@ RESOURCE_SECTION_PREFIX = ".ventus.resource."
 # Ventus spike driver buffer limits (spike_main/spike_device.cc):
 # `char logfilename[64]` receives `--log=<path>.log`, so the path (plus
 # suffixes) must fit in 64 chars. This is the binding constraint on staging.
-DRIVER_PATH_LIMIT = 64 - len("--log=") - len(".log") - 1   # 53
+DRIVER_PATH_LIMIT = 64 - len("--log=") - len(".log") - 1  # 53
 
 # Launch profiles. The named vocabulary is shared with
 # `third_party/ventus/reference_launcher/ventus_spike_smoke.cpp` and
@@ -143,8 +143,7 @@ class VentusLaunchProfile:
     vgpr_usage: int
 
 
-def _profile(lanes_per_warp, warps_per_workgroup, lds_size, pds_size,
-             sgpr_usage, vgpr_usage):
+def _profile(lanes_per_warp, warps_per_workgroup, lds_size, pds_size, sgpr_usage, vgpr_usage):
     return VentusLaunchProfile(
         lanes_per_warp=lanes_per_warp,
         warps_per_workgroup=warps_per_workgroup,
@@ -170,7 +169,8 @@ LAUNCH_PROFILE_VOCABULARY = {
 
 # Profiles this launcher can launch: V1 kernels with the fixed 32-lane warp.
 BUILTIN_PROFILES = {
-    name: profile for name, profile in LAUNCH_PROFILE_VOCABULARY.items()
+    name: profile
+    for name, profile in LAUNCH_PROFILE_VOCABULARY.items()
     if profile.lanes_per_warp == V1_LANES_PER_WARP
 }
 
@@ -208,10 +208,9 @@ class _Driver:
         if name in _SINGLE_SHOT_DRIVERS:
             opened = getattr(sys, _OPENED_ATTR, set())
             if name in opened:
-                raise RuntimeError(
-                    f"driver {name!r} can only be opened once per process: "
-                    f"{_SINGLE_SHOT_DRIVERS[name]}; run each such launch in "
-                    "its own process")
+                raise RuntimeError(f"driver {name!r} can only be opened once per process: "
+                                   f"{_SINGLE_SHOT_DRIVERS[name]}; run each such launch in "
+                                   "its own process")
             setattr(sys, _OPENED_ATTR, opened | {name})
         self.lib = ctypes.CDLL(str(so))
         self.dev = ctypes.c_void_p()
@@ -220,24 +219,22 @@ class _Driver:
         f.vt_dev_open.restype = ctypes.c_int
         f.vt_dev_close.argtypes = [ctypes.c_void_p]
         f.vt_dev_close.restype = ctypes.c_int
-        f.vt_buf_alloc.argtypes = [ctypes.c_void_p, ctypes.c_uint64,
-                                   ctypes.POINTER(ctypes.c_uint64),
-                                   ctypes.c_int, ctypes.c_uint64,
-                                   ctypes.c_uint64]
+        f.vt_buf_alloc.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint64,
+            ctypes.POINTER(ctypes.c_uint64), ctypes.c_int, ctypes.c_uint64, ctypes.c_uint64
+        ]
         f.vt_buf_alloc.restype = ctypes.c_int
-        f.vt_copy_to_dev.argtypes = [ctypes.c_void_p, ctypes.c_uint64,
-                                     ctypes.c_void_p, ctypes.c_uint64,
-                                     ctypes.c_uint64, ctypes.c_uint64]
+        f.vt_copy_to_dev.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64
+        ]
         f.vt_copy_to_dev.restype = ctypes.c_int
-        f.vt_copy_from_dev.argtypes = [ctypes.c_void_p, ctypes.c_uint64,
-                                       ctypes.c_void_p, ctypes.c_uint64,
-                                       ctypes.c_uint64, ctypes.c_uint64]
+        f.vt_copy_from_dev.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64
+        ]
         f.vt_copy_from_dev.restype = ctypes.c_int
-        f.vt_upload_kernel_file.argtypes = [ctypes.c_void_p, ctypes.c_char_p,
-                                            ctypes.c_int]
+        f.vt_upload_kernel_file.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
         f.vt_upload_kernel_file.restype = ctypes.c_int
-        f.vt_start.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
-                               ctypes.c_uint64]
+        f.vt_start.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint64]
         f.vt_start.restype = ctypes.c_int
         f.vt_ready_wait.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
         f.vt_ready_wait.restype = ctypes.c_int
@@ -255,16 +252,12 @@ class _Driver:
 
     def to_dev(self, vaddr: int, data: bytes):
         buf = ctypes.create_string_buffer(bytes(data), len(data))
-        if self.lib.vt_copy_to_dev(self.dev, vaddr,
-                                   ctypes.cast(buf, ctypes.c_void_p),
-                                   len(data), 0, 0) != 0:
+        if self.lib.vt_copy_to_dev(self.dev, vaddr, ctypes.cast(buf, ctypes.c_void_p), len(data), 0, 0) != 0:
             raise RuntimeError("vt_copy_to_dev failed")
 
     def from_dev(self, vaddr: int, size: int) -> bytes:
         buf = ctypes.create_string_buffer(size)
-        if self.lib.vt_copy_from_dev(self.dev, vaddr,
-                                     ctypes.cast(buf, ctypes.c_void_p),
-                                     size, 0, 0) != 0:
+        if self.lib.vt_copy_from_dev(self.dev, vaddr, ctypes.cast(buf, ctypes.c_void_p), size, 0, 0) != 0:
             raise RuntimeError("vt_copy_from_dev failed")
         return buf.raw
 
@@ -332,7 +325,7 @@ class LaunchSpec:
     n_elements: int
     local_size: int = 32
     ptr_dtype: str = "f32"
-    scalar: int = 0                  # n (tail) for the vector_add kernel
+    scalar: int = 0  # n (tail) for the vector_add kernel
     work_dim: int = 1
     num_warps: int = 1
     sgpr: int = 64
@@ -341,13 +334,13 @@ class LaunchSpec:
     pds: int = 0x1000
     timeout_s: int = 120
     keep_log: bool = False
-    profile: str = "v1-32"           # named launch profile (see BUILTIN_PROFILES)
+    profile: str = "v1-32"  # named launch profile (see BUILTIN_PROFILES)
     # Entry symbol to launch. The ABI below (x_ptr, y_ptr, z_ptr, n) and the
     # `z[i] = x[i] + y[i]` reference are what the launcher actually requires,
     # so any elementwise-add kernel that covers [0, n) qualifies -- 1-D or a
     # 2-D tile whose flattened offsets cover the same range.
     kernel_name: str = "vector_add_kernel"
-    driver: str = DEFAULT_DRIVER      # device driver, see DRIVERS
+    driver: str = DEFAULT_DRIVER  # device driver, see DRIVERS
     # Use exactly the declarations in this spec instead of letting the compiled
     # VRES record win. The OpenCL arm declares fixed lds/pds/sgpr/vgpr
     # (`pocl_ventus.cc`), and register declarations steer the model's warp
@@ -364,26 +357,22 @@ class LaunchSpec:
         if not self.elf.is_file():
             raise FileNotFoundError(self.elf)
         if self.driver not in DRIVERS:
-            raise ValueError(
-                f"unknown driver {self.driver!r}; expected one of "
-                f"{sorted(DRIVERS)}")
+            raise ValueError(f"unknown driver {self.driver!r}; expected one of "
+                             f"{sorted(DRIVERS)}")
         if self.profile not in LAUNCH_PROFILE_VOCABULARY:
-            raise ValueError(
-                f"unknown launch profile {self.profile!r}; "
-                f"expected one of {sorted(LAUNCH_PROFILE_VOCABULARY)}")
+            raise ValueError(f"unknown launch profile {self.profile!r}; "
+                             f"expected one of {sorted(LAUNCH_PROFILE_VOCABULARY)}")
         if self.profile not in BUILTIN_PROFILES:
             # A known profile this launcher cannot realize: `legacy-8x2` is an
             # 8-lane shape owned by the C++ smoke tool.
-            raise ValueError(
-                f"launch profile {self.profile!r} is not launchable by this "
-                f"V1 launcher; use {sorted(BUILTIN_PROFILES)}")
+            raise ValueError(f"launch profile {self.profile!r} is not launchable by this "
+                             f"V1 launcher; use {sorted(BUILTIN_PROFILES)}")
         if self.local_size not in (32, 64):
             raise ValueError("V1 launch local_size must be 32 or 64")
 
 
 def _kernel_entry(elf: Path, name: str) -> int:
-    out = subprocess.run([str(LLVM_NM), str(elf)], capture_output=True,
-                         text=True, check=True).stdout
+    out = subprocess.run([str(LLVM_NM), str(elf)], capture_output=True, text=True, check=True).stdout
     for line in out.splitlines():
         parts = line.split()
         if len(parts) == 3 and parts[1] == "T" and parts[2] == name:
@@ -399,9 +388,7 @@ def _resource_record(elf: Path, kernel: str) -> dict:
     through hard-coded offsets; V1 keeps the record as the sole transport and
     the launcher validates it against the compiled artifact.
     """
-    out = subprocess.run(
-        [_readelf(), "-S", str(elf)], capture_output=True, text=True,
-        check=True).stdout
+    out = subprocess.run([_readelf(), "-S", str(elf)], capture_output=True, text=True, check=True).stdout
     import re
     # `[10] .ventus.resource.<k> PROGBITS <addr> <off> <size> ...`
     sec = re.search(rf"{re.escape(RESOURCE_SECTION_PREFIX + kernel)}\s+"
@@ -443,9 +430,8 @@ def stage_elf(elf: Path, staging_dir: Path | None = None) -> Path:
         staging_dir = Path(tempfile.gettempdir()) / f"vt{key}"
     staged = staging_dir / "k.elf"
     if len(str(staged)) > DRIVER_PATH_LIMIT:
-        raise ValueError(
-            f"staged ELF path {str(staged)!r} exceeds the Ventus driver's "
-            f"{DRIVER_PATH_LIMIT}-character limit; pass a shorter staging_dir")
+        raise ValueError(f"staged ELF path {str(staged)!r} exceeds the Ventus driver's "
+                         f"{DRIVER_PATH_LIMIT}-character limit; pass a shorter staging_dir")
     staging_dir.mkdir(parents=True, exist_ok=True)
     if not staged.is_file() or staged.read_bytes() != elf.read_bytes():
         staged.write_bytes(elf.read_bytes())
@@ -464,19 +450,17 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
     n = spec.n_elements
     profile = BUILTIN_PROFILES[spec.profile]
     if spec.local_size != profile.local_size_x:
-        raise ValueError(
-            f"local_size {spec.local_size} disagrees with profile "
-            f"{spec.profile!r} (local_size_x={profile.local_size_x})")
+        raise ValueError(f"local_size {spec.local_size} disagrees with profile "
+                         f"{spec.profile!r} (local_size_x={profile.local_size_x})")
     # A profile declares how many warps the launch has; the kernel was
     # compiled for `num_warps` warps. Mismatching them would launch lanes the
     # kernel never accounted for (Triton distributes the block over
     # num_warps x warp_size lanes), so the results would alias rather than
     # fail. Refuse instead.
     if spec.num_warps != profile.warps_per_workgroup:
-        raise ValueError(
-            f"kernel num_warps {spec.num_warps} disagrees with profile "
-            f"{spec.profile!r} (warps_per_workgroup="
-            f"{profile.warps_per_workgroup})")
+        raise ValueError(f"kernel num_warps {spec.num_warps} disagrees with profile "
+                         f"{spec.profile!r} (warps_per_workgroup="
+                         f"{profile.warps_per_workgroup})")
     local = profile.local_size_x
     elements_per_program = spec.elements_per_program or local
     grid = (n + elements_per_program - 1) // elements_per_program
@@ -541,8 +525,7 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
         # per work-group, which POCL mirrors -- so sizing this for a single
         # work-group is invisible there and only showed up when the grid of a
         # launch grew beyond one.
-        pds_addr = driver.alloc(pds * profile.lanes_per_warp *
-                                profile.warps_per_workgroup * grid)
+        pds_addr = driver.alloc(pds * profile.lanes_per_warp * profile.warps_per_workgroup * grid)
 
         md = _MetaData()
         md.kernel_id = 0
@@ -575,9 +558,7 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
         driver.close()
 
     expect = [a + b for a, b in zip(x, y)]
-    mismatches = [(i, got, exp)
-                  for i, (got, exp) in enumerate(zip(z, expect))
-                  if abs(got - exp) > 1e-6]
+    mismatches = [(i, got, exp) for i, (got, exp) in enumerate(zip(z, expect)) if abs(got - exp) > 1e-6]
 
     result = {
         "kernel": spec.kernel_name,
@@ -629,14 +610,12 @@ def main():
     ap.add_argument("--elf", required=True)
     ap.add_argument("--n", type=int, default=64)
     ap.add_argument("--local", type=int, default=32)
-    ap.add_argument("--profile", default="v1-32",
-                    choices=sorted(BUILTIN_PROFILES))
+    ap.add_argument("--profile", default="v1-32", choices=sorted(BUILTIN_PROFILES))
     ap.add_argument("--driver", default=DEFAULT_DRIVER, choices=sorted(DRIVERS))
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
-    spec = LaunchSpec(elf=args.elf, n_elements=args.n, local_size=args.local,
-                      profile=args.profile, driver=args.driver)
+    spec = LaunchSpec(elf=args.elf, n_elements=args.n, local_size=args.local, profile=args.profile, driver=args.driver)
     result = run_vector_add(spec)
     print(json.dumps(result, indent=2))
     ok = result["num_mismatches"] == 0

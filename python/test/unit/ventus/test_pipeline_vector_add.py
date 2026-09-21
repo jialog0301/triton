@@ -41,8 +41,7 @@ def vector_add_kernel(x_ptr, y_ptr, z_ptr, n, BLOCK: tl.constexpr):
 
 
 @triton.jit
-def vector_add_2d_kernel(x_ptr, y_ptr, z_ptr, n, BLOCK_M: tl.constexpr,
-                         BLOCK_N: tl.constexpr):
+def vector_add_2d_kernel(x_ptr, y_ptr, z_ptr, n, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
     pid = tl.program_id(0)
     offs_m = pid * BLOCK_M + tl.arange(0, BLOCK_M)[:, None]
     offs_n = tl.arange(0, BLOCK_N)[None, :]
@@ -58,11 +57,8 @@ def ventus_backend(monkeypatch, tmp_path):
     isolated = tmp_path / "triton" / "backends"
     isolated.mkdir(parents=True)
     (isolated / "ventus").symlink_to(VENTUS_ROOT / "backend", target_is_directory=True)
-    monkeypatch.setattr(triton_backends, "__path__",
-                        [str(isolated), *triton_backends.__path__])
-    entry_points = EntryPoints(
-        (EntryPoint(name="ventus", value="triton.backends.ventus",
-                    group="triton.backends"), ))
+    monkeypatch.setattr(triton_backends, "__path__", [str(isolated), *triton_backends.__path__])
+    entry_points = EntryPoints((EntryPoint(name="ventus", value="triton.backends.ventus", group="triton.backends"), ))
     monkeypatch.setattr(triton_backends, "entry_points", lambda: entry_points)
     importlib.invalidate_caches()
     try:
@@ -71,8 +67,7 @@ def ventus_backend(monkeypatch, tmp_path):
         monkeypatch.setitem(triton_backends.backends, "ventus", registration)
         yield registration
     finally:
-        for name in ("triton.backends.ventus.driver",
-                     "triton.backends.ventus.compiler", "triton.backends.ventus"):
+        for name in ("triton.backends.ventus.driver", "triton.backends.ventus.compiler", "triton.backends.ventus"):
             sys.modules.pop(name, None)
         importlib.invalidate_caches()
 
@@ -85,8 +80,7 @@ def _compile(fn, constexprs, num_warps, monkeypatch, tmp_path):
     monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path / "cache"))
     src = ASTSource(
         fn=fn,
-        signature={"x_ptr": "*fp32", "y_ptr": "*fp32", "z_ptr": "*fp32",
-                   "n": "i32"},
+        signature={"x_ptr": "*fp32", "y_ptr": "*fp32", "z_ptr": "*fp32", "n": "i32"},
         constexprs=constexprs,
     )
     return triton_compile(src, target=TARGET, options={"num_warps": num_warps})
@@ -126,17 +120,16 @@ def test_vector_add_pipeline_stages(ventus_backend, monkeypatch, tmp_path):
     assert elf[4] == 1  # ELFCLASS32
 
 
-def test_llir_round_trips_through_ventus_opt(ventus_backend, monkeypatch,
-                                             tmp_path):
+def test_llir_round_trips_through_ventus_opt(ventus_backend, monkeypatch, tmp_path):
     _compile_vector_add(monkeypatch, tmp_path)
     llir_path = _stage_file(tmp_path / "cache", ".llir")
 
     # The Ventus toolchain must accept the emitted text as-is; `opt` also
     # round-trips the `ventus_kernel` keyword.
     out = tmp_path / "roundtrip.ll"
-    subprocess.run([str(TOOL_ROOT / "opt"), "-passes=verify", "-S",
-                    str(llir_path), "-o", str(out)],
-                   capture_output=True, text=True, check=True)
+    subprocess.run(
+        [str(TOOL_ROOT / "opt"), "-passes=verify", "-S",
+         str(llir_path), "-o", str(out)], capture_output=True, text=True, check=True)
     assert "define ventus_kernel void @vector_add_kernel(" in out.read_text()
 
 
@@ -153,15 +146,12 @@ def test_vector_add_on_spike(ventus_backend, monkeypatch, tmp_path):
     _compile_vector_add(monkeypatch, tmp_path)
     elf_path = _stage_file(tmp_path / "cache", ".elf")
     launcher = importlib.import_module("triton.backends.ventus.launcher")
-    result = launcher.run_vector_add(
-        launcher.LaunchSpec(elf=elf_path, n_elements=100,
-                            local_size=32, keep_log=True))
+    result = launcher.run_vector_add(launcher.LaunchSpec(elf=elf_path, n_elements=100, local_size=32, keep_log=True))
     assert len(result["spike_log"]) > 0, "spike produced no execution log"
     # The instruction log must actually reach the kernel body and execute the
     # elementwise add and the masked store.
     entry = int(result["entry"], 16)
-    body = [line for line in result["spike_log"].splitlines()
-            if line.startswith(f"core   0: 0x{entry:08x}")]
+    body = [line for line in result["spike_log"].splitlines() if line.startswith(f"core   0: 0x{entry:08x}")]
     assert body, "kernel entry never executed on Spike"
     assert any("vfadd" in line for line in result["spike_log"].splitlines())
     assert any("vsw12.v" in line for line in result["spike_log"].splitlines())
@@ -194,36 +184,30 @@ def test_vector_add_manifest_gate4(ventus_backend, monkeypatch, tmp_path):
     launcher = importlib.import_module("triton.backends.ventus.launcher")
     manifest = importlib.import_module("triton.backends.ventus.manifest")
 
-    facts = manifest.CompileFacts(
-        cache_dir=cache, kernel_name="vector_add_kernel",
-        elf_name="vector_add_kernel", local_size=32, grid_size=4,
-        op_name="vector_add")
+    facts = manifest.CompileFacts(cache_dir=cache, kernel_name="vector_add_kernel", elf_name="vector_add_kernel",
+                                  local_size=32, grid_size=4, op_name="vector_add")
     out = tmp_path / "vector_add_kernel.manifest.json"
     md = manifest.build_compile_manifest(facts, out)
     assert not manifest.validate(md), "compile-side manifest must not validate"
 
     result = launcher.run_vector_add(
-        launcher.LaunchSpec(elf=facts.stage("elf"), n_elements=100,
-                            local_size=32, keep_log=True))
+        launcher.LaunchSpec(elf=facts.stage("elf"), n_elements=100, local_size=32, keep_log=True))
     result["exit_status"] = 0
     manifest.record_execution(
-        md, out,
-        {"elf_sha256": result["elf_sha256"], "grid": result["grid"],
-         "local_size": result["local_size"],
-         "capability_identity":
-             manifest.capability_identity(manifest.load_identity()),
-         "spike": manifest.tool_identity(manifest.load_identity(), "spike")},
-        result, spike_log=Path(result["staged_elf"] + ".log"))
-    assert {a.kind for a in md.artifacts} >= {
-        "ttir", "ttgir", "llvm_ir", "assembly", "elf", "launcher_input",
-        "test_result"}
+        md, out, {
+            "elf_sha256": result["elf_sha256"], "grid": result["grid"], "local_size": result["local_size"],
+            "capability_identity": manifest.capability_identity(
+                manifest.load_identity()), "spike": manifest.tool_identity(manifest.load_identity(), "spike")
+        }, result, spike_log=Path(result["staged_elf"] + ".log"))
+    assert {a.kind
+            for a in md.artifacts} >= {"ttir", "ttgir", "llvm_ir", "assembly", "elf", "launcher_input", "test_result"}
     assert manifest.validate(md), "gate-4 manifest must validate"
 
     reloaded = manifest.load_manifest(out)
     assert reloaded is not None
-    assert {a.kind for a in reloaded.artifacts} >= {
-        "ttir", "ttgir", "llvm_ir", "assembly", "elf", "launcher_input",
-        "test_result"}
+    assert {a.kind
+            for a in reloaded.artifacts
+            } >= {"ttir", "ttgir", "llvm_ir", "assembly", "elf", "launcher_input", "test_result"}
 
 
 def test_launch_profile_consistency(ventus_backend, monkeypatch, tmp_path):
@@ -248,14 +232,11 @@ def test_launch_profile_consistency(ventus_backend, monkeypatch, tmp_path):
     # v1-32 declares one warp, so a two-warp kernel is refused before launch.
     with pytest.raises(ValueError, match="num_warps"):
         launcher.run_vector_add(
-            launcher.LaunchSpec(elf=elf_path, n_elements=64, num_warps=2,
-                                local_size=32, profile="v1-32"))
+            launcher.LaunchSpec(elf=elf_path, n_elements=64, num_warps=2, local_size=32, profile="v1-32"))
 
     # v1-32 declares local_size_x=32, so a 64-lane launch is refused.
     with pytest.raises(ValueError, match="local_size"):
-        launcher.run_vector_add(
-            launcher.LaunchSpec(elf=elf_path, n_elements=64, local_size=64,
-                                profile="v1-32"))
+        launcher.run_vector_add(launcher.LaunchSpec(elf=elf_path, n_elements=64, local_size=64, profile="v1-32"))
 
     # The two-warp shape is legal under the matching profile.
     assert launcher.BUILTIN_PROFILES["v1-64"].warps_per_workgroup == 2
@@ -276,18 +257,15 @@ def test_launch_profiles_are_self_consistent():
     # This launcher only realizes the V1 32-lane warp; the legacy shape stays
     # with the C++ smoke tool rather than being launched with the wrong lanes.
     assert set(launcher.BUILTIN_PROFILES) == {"v1-32", "v1-64"}
-    assert all(p.lanes_per_warp == launcher.V1_LANES_PER_WARP
-               for p in launcher.BUILTIN_PROFILES.values())
+    assert all(p.lanes_per_warp == launcher.V1_LANES_PER_WARP for p in launcher.BUILTIN_PROFILES.values())
 
 
-def test_vector_add_spike_exact_multiple(ventus_backend, monkeypatch,
-                                         tmp_path):
+def test_vector_add_spike_exact_multiple(ventus_backend, monkeypatch, tmp_path):
     """Non-boundary control: N=32 (single work-group, full active warp)."""
     _compile_vector_add(monkeypatch, tmp_path)
     elf_path = _stage_file(tmp_path / "cache", ".elf")
     launcher = importlib.import_module("triton.backends.ventus.launcher")
-    result = launcher.run_vector_add(
-        launcher.LaunchSpec(elf=elf_path, n_elements=32, local_size=32))
+    result = launcher.run_vector_add(launcher.LaunchSpec(elf=elf_path, n_elements=32, local_size=32))
     assert result["grid"] == 1
     assert result["num_mismatches"] == 0
 
@@ -310,9 +288,8 @@ def test_vector_add_on_cyclesim(ventus_backend, monkeypatch, tmp_path):
     _compile_vector_add(monkeypatch, tmp_path)
     elf_path = _stage_file(tmp_path / "cache", ".elf")
     launcher = importlib.import_module("triton.backends.ventus.launcher")
-    result = launcher.run_vector_add(
-        launcher.LaunchSpec(elf=elf_path, n_elements=100, local_size=32,
-                            driver="cyclesim"))
+    result = launcher.run_vector_add(launcher.LaunchSpec(elf=elf_path, n_elements=100, local_size=32,
+                                                         driver="cyclesim"))
     assert result["driver"] == "cyclesim"
     assert result["grid"] == 4
     assert result["num_mismatches"] == 0
@@ -342,9 +319,7 @@ def test_vector_add_on_rtl(ventus_backend, monkeypatch, tmp_path):
     _compile_vector_add(monkeypatch, tmp_path)
     elf_path = _stage_file(tmp_path / "cache", ".elf")
     launcher = importlib.import_module("triton.backends.ventus.launcher")
-    result = launcher.run_vector_add(
-        launcher.LaunchSpec(elf=elf_path, n_elements=64, local_size=32,
-                            driver="rtlsim"))
+    result = launcher.run_vector_add(launcher.LaunchSpec(elf=elf_path, n_elements=64, local_size=32, driver="rtlsim"))
     assert result["driver"] == "rtlsim"
     assert result["grid"] == 2
     assert result["num_mismatches"] == 0
@@ -365,8 +340,7 @@ def test_vector_add_tiled_on_spike(ventus_backend, monkeypatch, tmp_path):
     elf_path = _stage_file(tmp_path / "cache", ".elf")
     launcher = importlib.import_module("triton.backends.ventus.launcher")
     result = launcher.run_vector_add(
-        launcher.LaunchSpec(elf=elf_path, n_elements=1024, local_size=32,
-                            elements_per_program=256))
+        launcher.LaunchSpec(elf=elf_path, n_elements=1024, local_size=32, elements_per_program=256))
     assert result["grid"] == 4
     assert result["num_mismatches"] == 0
 
@@ -386,14 +360,11 @@ def test_2d_tile_vector_add_on_spike(ventus_backend, monkeypatch, tmp_path):
     # covered exactly once.
     assert block_m * block_n == local_size
 
-    _compile(vector_add_2d_kernel, {"BLOCK_M": block_m, "BLOCK_N": block_n}, 1,
-             monkeypatch, tmp_path)
+    _compile(vector_add_2d_kernel, {"BLOCK_M": block_m, "BLOCK_N": block_n}, 1, monkeypatch, tmp_path)
     elf_path = _stage_file(tmp_path / "cache", ".elf")
     launcher = importlib.import_module("triton.backends.ventus.launcher")
     result = launcher.run_vector_add(
-        launcher.LaunchSpec(elf=elf_path, n_elements=100,
-                            local_size=local_size,
-                            kernel_name="vector_add_2d_kernel"))
+        launcher.LaunchSpec(elf=elf_path, n_elements=100, local_size=local_size, kernel_name="vector_add_2d_kernel"))
     assert result["grid"] == 4
     assert result["num_mismatches"] == 0
 
@@ -412,8 +383,7 @@ def test_vector_add_two_warps_on_spike(ventus_backend, monkeypatch, tmp_path):
     elf_path = _stage_file(tmp_path / "cache", ".elf")
     launcher = importlib.import_module("triton.backends.ventus.launcher")
     result = launcher.run_vector_add(
-        launcher.LaunchSpec(elf=elf_path, n_elements=128, local_size=64,
-                            num_warps=2, profile="v1-64"))
+        launcher.LaunchSpec(elf=elf_path, n_elements=128, local_size=64, num_warps=2, profile="v1-64"))
     assert result["grid"] == 2
     assert result["driver_wf_size"] == 32
     assert result["driver_wg_size"] == 2

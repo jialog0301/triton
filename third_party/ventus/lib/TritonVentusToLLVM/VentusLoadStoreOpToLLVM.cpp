@@ -43,7 +43,8 @@ Value zeroOf(OpBuilder &rewriter, Location loc, Type llvmElemTy) {
   if (auto floatTy = dyn_cast<FloatType>(llvmElemTy))
     return LLVM::ConstantOp::create(
         rewriter, loc, llvmElemTy,
-        rewriter.getFloatAttr(floatTy, APFloat(floatTy.getFloatSemantics(), 0)));
+        rewriter.getFloatAttr(floatTy,
+                              APFloat(floatTy.getFloatSemantics(), 0)));
   llvm::report_fatal_error("Ventus lowering (V1): bad element type");
 }
 
@@ -103,17 +104,17 @@ struct VentusElementwiseOpConversion
   using Base::Base;
   using OpAdaptor = typename Base::OpAdaptor;
 
-  SmallVector<DestOp>
-  createDestOps(SourceOp op, OpAdaptor adaptor,
-                ConversionPatternRewriter &rewriter, Type elemTy,
-                gpu::MultipleOperandsRange operands, Location loc) const {
+  SmallVector<DestOp> createDestOps(SourceOp op, OpAdaptor adaptor,
+                                    ConversionPatternRewriter &rewriter,
+                                    Type elemTy,
+                                    gpu::MultipleOperandsRange operands,
+                                    Location loc) const {
     return {DestOp::create(rewriter, loc, elemTy, operands[0],
                            adaptor.getAttributes().getValue())};
   }
 };
 
-struct VentusLoadOpConversion
-    : public ConvertOpToLLVMPattern<triton::LoadOp> {
+struct VentusLoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
   using ConvertOpToLLVMPattern<triton::LoadOp>::ConvertOpToLLVMPattern;
 
   LogicalResult
@@ -125,9 +126,9 @@ struct VentusLoadOpConversion
     // Judge on the original TTIR type: adapted tensor operands are packed
     // into LLVM structs.
     bool isTensor = isa<RankedTensorType>(op.getType());
-    Type elemTy =
-        isTensor ? cast<RankedTensorType>(op.getType()).getElementType()
-                 : op.getType();
+    Type elemTy = isTensor
+                      ? cast<RankedTensorType>(op.getType()).getElementType()
+                      : op.getType();
     auto llvmElemTy = typeConverter->convertType(elemTy);
     unsigned elemBytes = std::max(1u, llvmElemTy.getIntOrFloatBitWidth() / 8);
 
@@ -135,9 +136,8 @@ struct VentusLoadOpConversion
     Value llMask = adaptor.getMask();
     Value llOther = adaptor.getOther();
 
-    SmallVector<Value> ptrs =
-        isTensor ? unpackLLElements(loc, llPtr, rewriter)
-                 : SmallVector<Value>{llPtr};
+    SmallVector<Value> ptrs = isTensor ? unpackLLElements(loc, llPtr, rewriter)
+                                       : SmallVector<Value>{llPtr};
     SmallVector<Value> masks;
     if (llMask)
       masks = isTensor ? unpackLLElements(loc, llMask, rewriter)
@@ -162,8 +162,8 @@ struct VentusLoadOpConversion
                                            pred, other, elemBytes));
     }
 
-    Value out = packLLElements(loc, typeConverter, results, rewriter,
-                               op.getType());
+    Value out =
+        packLLElements(loc, typeConverter, results, rewriter, op.getType());
     rewriter.replaceOp(op, out);
     return success();
   }
@@ -181,9 +181,9 @@ struct VentusStoreOpConversion
 
     bool isTensor = isa<RankedTensorType>(op.getValue().getType());
     Type elemTy =
-        isTensor ? cast<RankedTensorType>(op.getValue().getType())
-                       .getElementType()
-                 : op.getValue().getType();
+        isTensor
+            ? cast<RankedTensorType>(op.getValue().getType()).getElementType()
+            : op.getValue().getType();
     auto llvmElemTy = typeConverter->convertType(elemTy);
     unsigned elemBytes = std::max(1u, llvmElemTy.getIntOrFloatBitWidth() / 8);
 
@@ -191,12 +191,10 @@ struct VentusStoreOpConversion
     Value llVal = adaptor.getValue();
     Value llMask = adaptor.getMask();
 
-    SmallVector<Value> ptrs =
-        isTensor ? unpackLLElements(loc, llPtr, rewriter)
-                 : SmallVector<Value>{llPtr};
-    SmallVector<Value> vals =
-        isTensor ? unpackLLElements(loc, llVal, rewriter)
-                 : SmallVector<Value>{llVal};
+    SmallVector<Value> ptrs = isTensor ? unpackLLElements(loc, llPtr, rewriter)
+                                       : SmallVector<Value>{llPtr};
+    SmallVector<Value> vals = isTensor ? unpackLLElements(loc, llVal, rewriter)
+                                       : SmallVector<Value>{llVal};
     SmallVector<Value> masks;
     if (llMask)
       masks = isTensor ? unpackLLElements(loc, llMask, rewriter)
@@ -222,7 +220,7 @@ void populateVentusLoadStoreOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     ModuleAxisInfoAnalysis &axisInfoAnalysis, PatternBenefit benefit) {
   patterns.add<VentusLoadOpConversion, VentusStoreOpConversion>(typeConverter,
-                                                               benefit);
+                                                                benefit);
 
   // Floating-point ops are re-registered per backend; the core populate only
   // covers the integer set. Mirrors the NVIDIA additions.

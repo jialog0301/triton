@@ -3,9 +3,9 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
 
-#include <tuple>
 #include <limits>
 #include <set>
+#include <tuple>
 
 using llvm::json::Array;
 using llvm::json::Object;
@@ -62,8 +62,10 @@ bool fromJSON(const Value &v, Identity &o, Path p) {
 }
 
 Value toJSON(const ToolchainIdentity &v) {
-  return Object{{"identity", v.identity}, {"llvm", toJSON(v.llvm)},
-                {"driver", toJSON(v.driver)}, {"spike", toJSON(v.spike)},
+  return Object{{"identity", v.identity},
+                {"llvm", toJSON(v.llvm)},
+                {"driver", toJSON(v.driver)},
+                {"spike", toJSON(v.spike)},
                 {"cyclesim", toJSON(v.cycleSim)},
                 {"rtl_simulator", toJSON(v.rtlSimulator)}};
 }
@@ -89,8 +91,10 @@ bool fromJSON(const Value &v, ElfIdentity &o, Path p) {
 }
 
 Value toJSON(const VentusKernelArgument &v) {
-  return Object{{"kind", v.kind},       {"binding", v.binding},
-                {"offset", v.offset},   {"size", v.size},
+  return Object{{"kind", v.kind},
+                {"binding", v.binding},
+                {"offset", v.offset},
+                {"size", v.size},
                 {"alignment", v.alignment}};
 }
 bool fromJSON(const Value &v, VentusKernelArgument &o, Path p) {
@@ -124,8 +128,10 @@ bool fromJSON(const Value &v, GridMetadata &o, Path p) {
 
 Value toJSON(const KernelConstraints &v) {
   return Object{{"required_features", strings(v.requiredFeatures)},
-                {"operation", v.operation}, {"dtype", v.dtype},
-                {"layout", v.layout}, {"shape", integers(v.shape)},
+                {"operation", v.operation},
+                {"dtype", v.dtype},
+                {"layout", v.layout},
+                {"shape", integers(v.shape)},
                 {"full_active_warp", v.fullActiveWarp},
                 {"mma_profile_hash", v.mmaProfileHash}};
 }
@@ -139,10 +145,15 @@ bool fromJSON(const Value &v, KernelConstraints &o, Path p) {
 }
 
 Value toJSON(const ResourceMetadata &v) {
-  return Object{{"shared_bytes", v.sharedBytes}, {"private_bytes", v.privateBytes},
-                {"vgpr", v.vgpr}, {"sgpr", v.sgpr}, {"lds_bytes", v.ldsBytes},
-                {"pds_bytes", v.pdsBytes}, {"vgpr_limit", v.vgprLimit},
-                {"sgpr_limit", v.sgprLimit}, {"lds_limit_bytes", v.ldsLimitBytes},
+  return Object{{"shared_bytes", v.sharedBytes},
+                {"private_bytes", v.privateBytes},
+                {"vgpr", v.vgpr},
+                {"sgpr", v.sgpr},
+                {"lds_bytes", v.ldsBytes},
+                {"pds_bytes", v.pdsBytes},
+                {"vgpr_limit", v.vgprLimit},
+                {"sgpr_limit", v.sgprLimit},
+                {"lds_limit_bytes", v.ldsLimitBytes},
                 {"pds_limit_bytes", v.pdsLimitBytes},
                 {"range_validated", v.rangeValidated}};
 }
@@ -159,8 +170,10 @@ bool fromJSON(const Value &v, ResourceMetadata &o, Path p) {
 }
 
 Value toJSON(const RawResourceRecord &v) {
-  return Object{{"magic", v.magic}, {"format_version", v.formatVersion},
-                {"record_size", v.recordSize}, {"values", rawValues(v.values)},
+  return Object{{"magic", v.magic},
+                {"format_version", v.formatVersion},
+                {"record_size", v.recordSize},
+                {"values", rawValues(v.values)},
                 {"parser_version", v.parserVersion},
                 {"source", v.source},
                 {"target_endian_decoded", v.targetEndianDecoded}};
@@ -185,7 +198,8 @@ bool fromJSON(const Value &v, RawResourceRecord &o, Path p) {
 }
 
 Value toJSON(const ResourceUnits &v) {
-  return Object{{"lds", v.lds}, {"pds", v.pds}, {"sgpr", v.sgpr}, {"vgpr", v.vgpr}};
+  return Object{
+      {"lds", v.lds}, {"pds", v.pds}, {"sgpr", v.sgpr}, {"vgpr", v.vgpr}};
 }
 bool fromJSON(const Value &v, ResourceUnits &o, Path p) {
   ObjectMapper m(v, p);
@@ -194,7 +208,8 @@ bool fromJSON(const Value &v, ResourceUnits &o, Path p) {
 }
 
 Value toJSON(const CapabilityRecord &v) {
-  return Object{{"version", v.version}, {"identity", v.identity},
+  return Object{{"version", v.version},
+                {"identity", v.identity},
                 {"simulator_address_convention", v.simulatorAddressConvention},
                 {"rtl_profile_hash", v.rtlProfileHash},
                 {"completion_contract_version", v.completionContractVersion},
@@ -214,8 +229,8 @@ bool fromJSON(const Value &v, CapabilityRecord &o, Path p) {
 }
 
 Value toJSON(const ArtifactReference &v) {
-  return Object{{"kind", v.kind}, {"path", v.path},
-                {"content_hash", v.contentHash}};
+  return Object{
+      {"kind", v.kind}, {"path", v.path}, {"content_hash", v.contentHash}};
 }
 bool fromJSON(const Value &v, ArtifactReference &o, Path p) {
   ObjectMapper m(v, p);
@@ -224,9 +239,10 @@ bool fromJSON(const Value &v, ArtifactReference &o, Path p) {
 }
 
 Value toJSON(const ToolInvocation &v) {
-  return Object{{"executable", v.executable}, {"argv", strings(v.argv)},
-                {"stdout", v.stdoutText}, {"stderr", v.stderrText},
-                {"exit_status", v.exitStatus}, {"tool_identity", v.toolIdentity}};
+  return Object{
+      {"executable", v.executable},  {"argv", strings(v.argv)},
+      {"stdout", v.stdoutText},      {"stderr", v.stderrText},
+      {"exit_status", v.exitStatus}, {"tool_identity", v.toolIdentity}};
 }
 bool fromJSON(const Value &v, ToolInvocation &o, Path p) {
   ObjectMapper m(v, p);
@@ -237,10 +253,13 @@ bool fromJSON(const Value &v, ToolInvocation &o, Path p) {
 }
 
 Value toJSON(const CompatibilityEvidence &v) {
-  return Object{{"llvm_ir_path", v.llvmIrPath}, {"llvm_ir_hash", v.llvmIrHash},
+  return Object{{"llvm_ir_path", v.llvmIrPath},
+                {"llvm_ir_hash", v.llvmIrHash},
                 {"internal_check_passed", v.internalCheckPassed},
-                {"diagnostics", v.diagnostics}, {"opt", toJSON(v.opt)},
-                {"llc", toJSON(v.llc)}, {"object_hash", v.objectHash}};
+                {"diagnostics", v.diagnostics},
+                {"opt", toJSON(v.opt)},
+                {"llc", toJSON(v.llc)},
+                {"object_hash", v.objectHash}};
 }
 bool fromJSON(const Value &v, CompatibilityEvidence &o, Path p) {
   ObjectMapper m(v, p);
@@ -255,8 +274,10 @@ Value toJSON(const LinkEvidence &v) {
   Array inputs;
   for (const auto &input : v.inputs)
     inputs.push_back(toJSON(input));
-  return Object{{"lld", toJSON(v.lld)}, {"inputs", std::move(inputs)},
-                {"elf_hash", v.elfHash}, {"validated", v.validated}};
+  return Object{{"lld", toJSON(v.lld)},
+                {"inputs", std::move(inputs)},
+                {"elf_hash", v.elfHash},
+                {"validated", v.validated}};
 }
 bool fromJSON(const Value &v, LinkEvidence &o, Path p) {
   ObjectMapper m(v, p);
@@ -270,47 +291,54 @@ Value toJSON(const VentusKernelMetadata &v) {
     arguments.push_back(toJSON(argument));
   for (const auto &artifact : v.artifacts)
     artifacts.push_back(toJSON(artifact));
-  return Object{
-      {"artifact_abi_version", v.artifactAbiVersion},
-      {"entry_point", v.entryPoint}, {"target_triple", v.targetTriple},
-      {"mcpu", v.mcpu}, {"pointer_width", v.pointerWidth},
-      {"warp_size", v.warpSize}, {"rtl_profile", toJSON(v.rtlProfile)},
-      {"toolchain", toJSON(v.toolchain)}, {"elf", toJSON(v.elf)},
-      {"calling_convention", v.callingConvention},
-      {"arguments", std::move(arguments)}, {"grid", toJSON(v.grid)},
-      {"constraints", toJSON(v.constraints)}, {"resources", toJSON(v.resources)},
-      {"raw_resource", toJSON(v.rawResource)},
-      {"resource_units", toJSON(v.resourceUnits)},
-      {"capability", toJSON(v.capability)}, {"artifacts", std::move(artifacts)},
-      {"result_records", strings(v.resultRecords)},
-      {"compatibility", toJSON(v.compatibility)},
-      {"link", toJSON(v.link)},
-      {"hard_coded_resource_consumption_rejected",
-       v.hardCodedResourceConsumptionRejected}};
+  return Object{{"artifact_abi_version", v.artifactAbiVersion},
+                {"entry_point", v.entryPoint},
+                {"target_triple", v.targetTriple},
+                {"mcpu", v.mcpu},
+                {"pointer_width", v.pointerWidth},
+                {"warp_size", v.warpSize},
+                {"rtl_profile", toJSON(v.rtlProfile)},
+                {"toolchain", toJSON(v.toolchain)},
+                {"elf", toJSON(v.elf)},
+                {"calling_convention", v.callingConvention},
+                {"arguments", std::move(arguments)},
+                {"grid", toJSON(v.grid)},
+                {"constraints", toJSON(v.constraints)},
+                {"resources", toJSON(v.resources)},
+                {"raw_resource", toJSON(v.rawResource)},
+                {"resource_units", toJSON(v.resourceUnits)},
+                {"capability", toJSON(v.capability)},
+                {"artifacts", std::move(artifacts)},
+                {"result_records", strings(v.resultRecords)},
+                {"compatibility", toJSON(v.compatibility)},
+                {"link", toJSON(v.link)},
+                {"hard_coded_resource_consumption_rejected",
+                 v.hardCodedResourceConsumptionRejected}};
 }
 bool fromJSON(const Value &v, VentusKernelMetadata &o, Path p) {
   ObjectMapper m(v, p);
   return m && m.map("artifact_abi_version", o.artifactAbiVersion) &&
          m.map("entry_point", o.entryPoint) &&
          m.map("target_triple", o.targetTriple) && m.map("mcpu", o.mcpu) &&
-         m.map("pointer_width", o.pointerWidth) && m.map("warp_size", o.warpSize) &&
-         m.map("rtl_profile", o.rtlProfile) && m.map("toolchain", o.toolchain) &&
-         m.map("elf", o.elf) && m.map("calling_convention", o.callingConvention) &&
+         m.map("pointer_width", o.pointerWidth) &&
+         m.map("warp_size", o.warpSize) && m.map("rtl_profile", o.rtlProfile) &&
+         m.map("toolchain", o.toolchain) && m.map("elf", o.elf) &&
+         m.map("calling_convention", o.callingConvention) &&
          m.map("arguments", o.arguments) && m.map("grid", o.grid) &&
-         m.map("constraints", o.constraints) && m.map("resources", o.resources) &&
+         m.map("constraints", o.constraints) &&
+         m.map("resources", o.resources) &&
          m.map("raw_resource", o.rawResource) &&
          m.map("resource_units", o.resourceUnits) &&
          m.map("capability", o.capability) && m.map("artifacts", o.artifacts) &&
          m.map("result_records", o.resultRecords) &&
-         m.map("compatibility", o.compatibility) &&
-         m.map("link", o.link) &&
+         m.map("compatibility", o.compatibility) && m.map("link", o.link) &&
          m.map("hard_coded_resource_consumption_rejected",
                o.hardCodedResourceConsumptionRejected);
 }
 
-#define VENTUS_EQ(Type, Lhs, Rhs)                                             \
-  bool Type::operator==(const Type &o) const {                                \
-    return std::tie Lhs == std::tie Rhs;                                      \
+#define VENTUS_EQ(Type, Lhs, Rhs)                                              \
+  bool Type::operator==(const Type &o) const {                                 \
+    return std::tie Lhs == std::tie Rhs;                                       \
   }
 
 VENTUS_EQ(Identity, (revision, contentHash), (o.revision, o.contentHash))
@@ -336,22 +364,21 @@ VENTUS_EQ(KernelConstraints,
 VENTUS_EQ(ResourceMetadata,
           (sharedBytes, privateBytes, vgpr, sgpr, ldsBytes, pdsBytes, vgprLimit,
            sgprLimit, ldsLimitBytes, pdsLimitBytes, rangeValidated),
-          (o.sharedBytes, o.privateBytes, o.vgpr, o.sgpr, o.ldsBytes, o.pdsBytes,
-           o.vgprLimit, o.sgprLimit, o.ldsLimitBytes, o.pdsLimitBytes,
-           o.rangeValidated))
+          (o.sharedBytes, o.privateBytes, o.vgpr, o.sgpr, o.ldsBytes,
+           o.pdsBytes, o.vgprLimit, o.sgprLimit, o.ldsLimitBytes,
+           o.pdsLimitBytes, o.rangeValidated))
 VENTUS_EQ(RawResourceRecord,
           (magic, formatVersion, recordSize, values, parserVersion, source,
            targetEndianDecoded),
           (o.magic, o.formatVersion, o.recordSize, o.values, o.parserVersion,
            o.source, o.targetEndianDecoded))
-VENTUS_EQ(ResourceUnits, (lds, pds, sgpr, vgpr),
-          (o.lds, o.pds, o.sgpr, o.vgpr))
+VENTUS_EQ(ResourceUnits, (lds, pds, sgpr, vgpr), (o.lds, o.pds, o.sgpr, o.vgpr))
 VENTUS_EQ(CapabilityRecord,
           (version, identity, simulatorAddressConvention, rtlProfileHash,
            completionContractVersion, timeoutObservable, completionObservable,
            cacheFlushObservable),
-          (o.version, o.identity, o.simulatorAddressConvention, o.rtlProfileHash,
-           o.completionContractVersion, o.timeoutObservable,
+          (o.version, o.identity, o.simulatorAddressConvention,
+           o.rtlProfileHash, o.completionContractVersion, o.timeoutObservable,
            o.completionObservable, o.cacheFlushObservable))
 VENTUS_EQ(ArtifactReference, (kind, path, contentHash),
           (o.kind, o.path, o.contentHash))
@@ -456,10 +483,9 @@ std::optional<std::string> validationError(const VentusKernelMetadata &m) {
     return "resource range validation failed";
   if (m.rawResource.magic != 0x53455256 || m.rawResource.formatVersion != 1 ||
       m.rawResource.recordSize != 24 || m.rawResource.parserVersion == 0 ||
-      m.rawResource.source.empty() ||
-      !m.rawResource.targetEndianDecoded || m.resourceUnits.lds.empty() ||
-      m.resourceUnits.pds.empty() || m.resourceUnits.sgpr.empty() ||
-      m.resourceUnits.vgpr.empty())
+      m.rawResource.source.empty() || !m.rawResource.targetEndianDecoded ||
+      m.resourceUnits.lds.empty() || m.resourceUnits.pds.empty() ||
+      m.resourceUnits.sgpr.empty() || m.resourceUnits.vgpr.empty())
     return "missing resource parser or unit contract";
   if (m.resources.vgpr > std::numeric_limits<uint32_t>::max() ||
       m.resources.sgpr > std::numeric_limits<uint32_t>::max() ||
@@ -467,10 +493,11 @@ std::optional<std::string> validationError(const VentusKernelMetadata &m) {
       m.resources.pdsBytes > std::numeric_limits<uint32_t>::max())
     return "normalized resource value exceeds VRES v1 field width";
   if (m.rawResource.values !=
-          std::array<uint32_t, 4>{static_cast<uint32_t>(m.resources.vgpr),
-                                  static_cast<uint32_t>(m.resources.sgpr),
-                                  static_cast<uint32_t>(m.resources.ldsBytes),
-                                  static_cast<uint32_t>(m.resources.pdsBytes)} ||
+          std::array<uint32_t, 4>{
+              static_cast<uint32_t>(m.resources.vgpr),
+              static_cast<uint32_t>(m.resources.sgpr),
+              static_cast<uint32_t>(m.resources.ldsBytes),
+              static_cast<uint32_t>(m.resources.pdsBytes)} ||
       m.resourceUnits.lds != "bytes_per_cta" ||
       m.resourceUnits.pds != "bytes_per_work_item" ||
       m.resourceUnits.sgpr != "32_bit_slots_per_wavefront" ||
@@ -486,8 +513,8 @@ std::optional<std::string> validationError(const VentusKernelMetadata &m) {
       !m.hardCodedResourceConsumptionRejected)
     return "invalid capability or resource-consumption contract";
   const std::set<std::string> requiredArtifacts = {
-      "ttir", "ttgir", "llvm_ir", "assembly", "elf", "launcher_input",
-      "test_result"};
+      "ttir", "ttgir",          "llvm_ir",    "assembly",
+      "elf",  "launcher_input", "test_result"};
   std::set<std::string> observedArtifacts;
   for (const auto &artifact : m.artifacts) {
     if (artifact.kind.empty() || artifact.path.empty() ||
@@ -498,16 +525,17 @@ std::optional<std::string> validationError(const VentusKernelMetadata &m) {
   if (observedArtifacts != requiredArtifacts || m.resultRecords.empty())
     return "missing artifact or result records";
   if (!m.compatibility.internalCheckPassed ||
-      m.compatibility.llvmIrPath.empty() || m.compatibility.llvmIrHash.empty() ||
-      !successful(m.compatibility.opt) || !successful(m.compatibility.llc) ||
-      m.compatibility.objectHash.empty())
+      m.compatibility.llvmIrPath.empty() ||
+      m.compatibility.llvmIrHash.empty() || !successful(m.compatibility.opt) ||
+      !successful(m.compatibility.llc) || m.compatibility.objectHash.empty())
     return "missing compatibility evidence";
-  const std::set<std::string> requiredLinkInputs = {
-      "linker_script", "crt0", "libclc", "workitem"};
+  const std::set<std::string> requiredLinkInputs = {"linker_script", "crt0",
+                                                    "libclc", "workitem"};
   std::set<std::string> observedLinkInputs;
   for (const auto &input : m.link.inputs) {
     if (input.kind.empty() || input.path.empty() || input.path.front() != '/' ||
-        input.contentHash.empty() || !observedLinkInputs.insert(input.kind).second)
+        input.contentHash.empty() ||
+        !observedLinkInputs.insert(input.kind).second)
       return "invalid link input";
   }
   if (!m.link.validated || !successful(m.link.lld) ||
@@ -529,7 +557,8 @@ std::optional<std::string> validationError(const VentusKernelMetadata &m) {
 
 bool validate(const VentusKernelMetadata &metadata,
               const ArtifactValidationContext &context) {
-  return !validationError(metadata) && metadata.rtlProfile == context.rtlProfile &&
+  return !validationError(metadata) &&
+         metadata.rtlProfile == context.rtlProfile &&
          metadata.toolchain == context.toolchain &&
          metadata.capability.identity == context.capabilityIdentity;
 }

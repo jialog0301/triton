@@ -6,7 +6,8 @@
  * single machine-readable RESULT line so a runner can collect it.
  *
  * Build (the installed ICD and headers):
- *   clang++ -O2 -std=c++11 main.cc -o vecadd_baseline -I$V/include -L$V/lib -lOpenCL
+ *   clang++ -O2 -std=c++11 main.cc -o vecadd_baseline -I$V/include -L$V/lib
+ * -lOpenCL
  */
 #include <CL/cl.h>
 
@@ -40,7 +41,8 @@ static std::string read_file(const char *path) {
 
 int main(int argc, char **argv) {
   if (argc < 4) {
-    std::fprintf(stderr, "usage: %s <kernel.cl> <n> <local> [items]\n", argv[0]);
+    std::fprintf(stderr, "usage: %s <kernel.cl> <n> <local> [items]\n",
+                 argv[0]);
     return 2;
   }
   const char *kernel_path = argv[1];
@@ -137,6 +139,7 @@ int main(int argc, char **argv) {
 
   std::printf("RESULT device=%s n=%d local=%d items=%d global=%zu grid=%zu "
               "num_mismatches=%d\n",
-              name, n, local, items, global, global / (size_t)local, mismatches);
+              name, n, local, items, global, global / (size_t)local,
+              mismatches);
   return mismatches == 0 ? 0 : 1;
 }

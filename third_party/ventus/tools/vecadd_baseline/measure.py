@@ -51,8 +51,10 @@ INSTALL = Path("/home/weijiale/Code/cuda2rvv/ventus-env/install")
 # *path* (`(index,)`), not by name (see `code_generator.py`).
 DIVISIBILITY_BYTES = 16
 
+
 def pointer_attrs(subset):
-    return {(i,): [["tt.divisibility", DIVISIBILITY_BYTES]] for i in subset}
+    return {(i, ): [["tt.divisibility", DIVISIBILITY_BYTES]] for i in subset}
+
 
 # Resource declarations the OpenCL arm sends, from `pocl_ventus.cc`
 # (`ldssize`/`pdssize`/`sgpr_usage`/`vgpr_usage`). The Triton arm is launched
@@ -62,9 +64,8 @@ def pointer_attrs(subset):
 # implementations.
 OPENCL_DECLARED = {"lds": 0x1000, "pds": 0x1000, "sgpr": 64, "vgpr": 64}
 
-_KERNEL_WINDOW = re.compile(
-    r"kernel \d+ \S+ initialized\b[^\n]*@(\d+)ns.*?"
-    r"kernel \d+ \S+ finished @(\d+)ns", re.DOTALL)
+_KERNEL_WINDOW = re.compile(r"kernel \d+ \S+ initialized\b[^\n]*@(\d+)ns.*?"
+                            r"kernel \d+ \S+ finished @(\d+)ns", re.DOTALL)
 
 
 def parse_kernel_window(output: str) -> int | None:
@@ -81,14 +82,22 @@ def parse_kernel_window(output: str) -> int | None:
 # OpenCL arm
 # --------------------------------------------------------------------------- #
 
+
 def build_opencl_arm() -> Path:
     exe = BASELINE_DIR / "vecadd_baseline"
     src = BASELINE_DIR / "main.cc"
     if exe.is_file() and exe.stat().st_mtime >= src.stat().st_mtime:
         return exe
     subprocess.run([
-        str(INSTALL / "bin" / "clang++"), "-O2", "-std=c++11", str(src), "-o",
-        str(exe), f"-I{INSTALL / 'include'}", f"-L{INSTALL / 'lib'}", "-lOpenCL",
+        str(INSTALL / "bin" / "clang++"),
+        "-O2",
+        "-std=c++11",
+        str(src),
+        "-o",
+        str(exe),
+        f"-I{INSTALL / 'include'}",
+        f"-L{INSTALL / 'lib'}",
+        "-lOpenCL",
     ], check=True, capture_output=True)
     return exe
 
@@ -119,14 +128,12 @@ def run_opencl_arm(n: int, local: int, items: int, backend: str) -> dict:
     # in a scratch directory instead of wherever the caller happens to stand.
     workdir = Path(tempfile.mkdtemp(prefix="ventus-opencl-"))
     proc = subprocess.run(
-        [str(exe), str(BASELINE_DIR / "kernel.cl"), str(n), str(local),
-         str(items)],
-        capture_output=True, text=True, env=ventus_env(backend), check=False,
+        [str(exe), str(BASELINE_DIR / "kernel.cl"),
+         str(n), str(local), str(items)], capture_output=True, text=True, env=ventus_env(backend), check=False,
         cwd=str(workdir))
     return {
         "exit_status": proc.returncode,
-        "result_line": next((line for line in proc.stdout.splitlines()
-                             if line.startswith("RESULT ")), None),
+        "result_line": next((line for line in proc.stdout.splitlines() if line.startswith("RESULT ")), None),
         "kernel_model_ns": parse_kernel_window(proc.stdout + proc.stderr),
         "workdir": str(workdir),
         "stderr_tail": (proc.stdout + proc.stderr)[-400:],
@@ -137,8 +144,8 @@ def run_opencl_arm(n: int, local: int, items: int, backend: str) -> dict:
 # Triton arm (runs in its own process; see the module docstring)
 # --------------------------------------------------------------------------- #
 
-def _triton_child(n: int, local: int, block: int, hint: bool, num_warps: int,
-                  backend: str, cache: Path) -> int:
+
+def _triton_child(n: int, local: int, block: int, hint: bool, num_warps: int, backend: str, cache: Path) -> int:
     """Compile and launch the Triton kernel, printing one JSON line."""
     import triton
     import triton.backends as triton_backends
@@ -149,8 +156,7 @@ def _triton_child(n: int, local: int, block: int, hint: bool, num_warps: int,
 
     isolated = cache / "backends"
     isolated.mkdir(parents=True)
-    (isolated / "ventus").symlink_to(VENTUS_ROOT / "backend",
-                                     target_is_directory=True)
+    (isolated / "ventus").symlink_to(VENTUS_ROOT / "backend", target_is_directory=True)
     triton_backends.__path__ = [str(isolated), *triton_backends.__path__]
     importlib.invalidate_caches()
     triton_backends.backends["ventus"] = \
@@ -165,49 +171,47 @@ def _triton_child(n: int, local: int, block: int, hint: bool, num_warps: int,
         y = tl.load(y_ptr + offs, mask=mask)
         tl.store(z_ptr + offs, x + y, mask=mask)
 
-    triton_compile(ASTSource(
-        fn=vector_add_kernel,
-        signature={"x_ptr": "*fp32", "y_ptr": "*fp32", "z_ptr": "*fp32",
-                   "n": "i32"},
-        constexprs={"BLOCK": block},
-        attrs=pointer_attrs((0, 1, 2)) if hint else None,
-    ), target=GPUTarget("ventus", "ventus-gpgpu", 32),
-        options={"num_warps": num_warps})
+    triton_compile(
+        ASTSource(
+            fn=vector_add_kernel,
+            signature={"x_ptr": "*fp32", "y_ptr": "*fp32", "z_ptr": "*fp32", "n": "i32"},
+            constexprs={"BLOCK": block},
+            attrs=pointer_attrs((0, 1, 2)) if hint else None,
+        ), target=GPUTarget("ventus", "ventus-gpgpu", 32), options={"num_warps": num_warps})
 
     launcher = importlib.import_module("triton.backends.ventus.launcher")
     result = launcher.run_vector_add(
-        launcher.LaunchSpec(elf=next(cache.rglob("*.elf")), n_elements=n,
-                            local_size=local, num_warps=num_warps,
-                            profile=("v1-32" if num_warps == 1 else "v1-64"),
-                            driver=backend, elements_per_program=block,
-                            force_resources=True, **OPENCL_DECLARED))
-    print(json.dumps({
-        "grid": result["grid"],
-        "num_mismatches": result["num_mismatches"],
-        "driver_total_ns": result["simulated_time_ns"],
-        "declared": OPENCL_DECLARED,
-        "block": block,
-        "hint": hint,
-    }))
+        launcher.LaunchSpec(elf=next(cache.rglob("*.elf")), n_elements=n, local_size=local, num_warps=num_warps,
+                            profile=("v1-32" if num_warps == 1 else "v1-64"), driver=backend,
+                            elements_per_program=block, force_resources=True, **OPENCL_DECLARED))
+    print(
+        json.dumps({
+            "grid": result["grid"],
+            "num_mismatches": result["num_mismatches"],
+            "driver_total_ns": result["simulated_time_ns"],
+            "declared": OPENCL_DECLARED,
+            "block": block,
+            "hint": hint,
+        }))
     return 0
 
 
-def run_triton_arm(n: int, local: int, block: int, hint: bool,
-                   num_warps: int, backend: str) -> dict:
+def run_triton_arm(n: int, local: int, block: int, hint: bool, num_warps: int, backend: str) -> dict:
     cache = Path(tempfile.mkdtemp(prefix="ventus-measure-cache-"))
     env = ventus_env(backend)
     env["PYTHONPATH"] = str(REPO / "python")
     env.setdefault("TRITON_HOME", str(REPO / ".triton-home"))
     env["TRITON_CACHE_DIR"] = str(cache / "triton")
-    proc = subprocess.run(
-        [sys.executable, str(Path(__file__).resolve()), "--arm", "triton",
-         "--n", str(n), "--local", str(local), "--block", str(block),
-         "--num-warps", str(num_warps),
-         "--backend", backend, "--hint" if hint else "--no-hint",
-         "--cache", str(cache)],
-        capture_output=True, text=True, env=env, cwd=str(REPO), check=False)
-    payload = next((line for line in proc.stdout.splitlines()
-                    if line.startswith("{")), None)
+    proc = subprocess.run([
+        sys.executable,
+        str(Path(__file__).resolve()), "--arm", "triton", "--n",
+        str(n), "--local",
+        str(local), "--block",
+        str(block), "--num-warps",
+        str(num_warps), "--backend", backend, "--hint" if hint else "--no-hint", "--cache",
+        str(cache)
+    ], capture_output=True, text=True, env=env, cwd=str(REPO), check=False)
+    payload = next((line for line in proc.stdout.splitlines() if line.startswith("{")), None)
     out = json.loads(payload) if payload else {"error": proc.stdout[-200:]}
     out["exit_status"] = proc.returncode
     out["kernel_model_ns"] = parse_kernel_window(proc.stdout + proc.stderr)
@@ -219,22 +223,21 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=1024)
     ap.add_argument("--local", type=int, default=32)
-    ap.add_argument("--block", type=int, default=0,
-                    help="Triton tile size in elements (default: --local)")
-    ap.add_argument("--num-warps", type=int, default=1,
-                    help="Triton warps per program; the launch profile follows "
-                         "(1 -> v1-32/local 32, 2 -> v1-64/local 64)")
-    ap.add_argument("--opencl-items", type=int, default=1,
-                    help="elements per work-item in the OpenCL arm; set it to "
-                         "block/local to give both arms the same shape")
-    ap.add_argument("--hint", action=argparse.BooleanOptionalAction, default=False,
-                    help="state the pointers' divisibility to the Triton arm. Off "
-                         "by default: it lets the coalescer give each thread "
-                         "several consecutive elements, and on this target that "
-                         "breaks warp-level coalescing (measured 2.7x slower with "
-                         "identical code, see README 6)")
-    ap.add_argument("--backend", default="spike",
-                    choices=["spike", "cyclesim", "rtlsim", "gvm", "auto"])
+    ap.add_argument("--block", type=int, default=0, help="Triton tile size in elements (default: --local)")
+    ap.add_argument(
+        "--num-warps", type=int, default=1, help="Triton warps per program; the launch profile follows "
+        "(1 -> v1-32/local 32, 2 -> v1-64/local 64)")
+    ap.add_argument(
+        "--opencl-items", type=int, default=1, help="elements per work-item in the OpenCL arm; set it to "
+        "block/local to give both arms the same shape")
+    ap.add_argument(
+        "--hint", action=argparse.BooleanOptionalAction, default=False,
+        help="state the pointers' divisibility to the Triton arm. Off "
+        "by default: it lets the coalescer give each thread "
+        "several consecutive elements, and on this target that "
+        "breaks warp-level coalescing (measured 2.7x slower with "
+        "identical code, see README 6)")
+    ap.add_argument("--backend", default="spike", choices=["spike", "cyclesim", "rtlsim", "gvm", "auto"])
     ap.add_argument("--skip-triton", action="store_true")
     ap.add_argument("--skip-opencl", action="store_true")
     ap.add_argument("--arm", default="both", choices=["both", "triton", "opencl"],
@@ -244,8 +247,7 @@ def main() -> int:
 
     block = args.block or args.local
     if args.arm == "triton":
-        return _triton_child(args.n, args.local, block, args.hint,
-                             args.num_warps, args.backend, Path(args.cache))
+        return _triton_child(args.n, args.local, block, args.hint, args.num_warps, args.backend, Path(args.cache))
 
     print(f"# n={args.n} local={args.local} block={block} "
           f"opencl_items={args.opencl_items} num_warps={args.num_warps} "
@@ -254,8 +256,7 @@ def main() -> int:
           f"triton_grid={(args.n + block - 1) // block} "
           f"opencl_grid={(args.n + args.local * args.opencl_items - 1) // (args.local * args.opencl_items)}")
     if not args.skip_triton:
-        t = run_triton_arm(args.n, args.local, block, args.hint,
-                           args.num_warps, args.backend)
+        t = run_triton_arm(args.n, args.local, block, args.hint, args.num_warps, args.backend)
         print(f"triton   grid={t.get('grid')} "
               f"mismatches={t.get('num_mismatches')} "
               f"kernel_model_ns={t.get('kernel_model_ns')} "

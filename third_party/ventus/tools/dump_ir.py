@@ -34,17 +34,14 @@ def vector_add_kernel(x_ptr, y_ptr, z_ptr, n, BLOCK: tl.constexpr):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out-dir", default="/tmp/ventus-out",
-                        help="directory receiving the stage artifacts")
+    parser.add_argument("--out-dir", default="/tmp/ventus-out", help="directory receiving the stage artifacts")
     parser.add_argument("--block", type=int, default=32)
     parser.add_argument("--num-warps", type=int, default=1)
     args = parser.parse_args()
 
     os.environ["TRITON_ALWAYS_COMPILE"] = "1"
     kernel = triton_compile(
-        ASTSource(fn=vector_add_kernel,
-                  signature={"x_ptr": "*fp32", "y_ptr": "*fp32",
-                             "z_ptr": "*fp32", "n": "i32"},
+        ASTSource(fn=vector_add_kernel, signature={"x_ptr": "*fp32", "y_ptr": "*fp32", "z_ptr": "*fp32", "n": "i32"},
                   constexprs={"BLOCK": args.block}),
         target=TARGET,
         options={"num_warps": args.num_warps},
