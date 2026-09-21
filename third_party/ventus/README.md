@@ -35,10 +35,10 @@ MLIR/LLVM 下降低源，`toolchain/` 记录工具链身份与边界事实，`re
 固定链接输入：`crt0.o`（提供 `_start`）、`riscv32clc.o`（work-item 内建）、`libworkitem.a`、
 `ldscripts/ventus/elf32lriscv.ld`，全部按绝对路径调用。
 
-### 2.1 与上游的关系（已 rebase 到 origin/main）
+### 2.1 与上游的关系
 
-`feature/triton-ventus-v1` 已 **rebase 到 `origin/main`**：`0 落后 / 4 领先`，我们的 4 个提交
-直接坐在最新上游之上。`main` 分支仍停在旧的 `af6b189cf5`（按既有习惯不动它）。
+`feature/triton-ventus-v1` 直接坐在 `origin/main` 之上（2026-09-17 rebase，当时 0 落后 / 4 领先；
+当前领先/落后与同步流程见 §2.2）。**rebase 不是合并**：分支仍是未合并状态，上游主线里没有我们的提交。
 
 rebase **零 git 冲突**——我们与上游的文件交集只有 `.gitignore`、`AGENTS.md`、`CMakeLists.txt`，
 且多为纯追加。此前用 cherry-pick 试过的 3 个提交在 rebase 时被 git 自动识别为"已应用"并跳过，
@@ -77,6 +77,38 @@ git log --oneline <我们的基点>..<目标提交>^ -- <该补丁触及的文�
 **两种操作的冲突面方向相反**：cherry-pick 的冲突大小正比于"补丁文件在中间被上游改动的次数"
 （我们无法控制）；rebase 的冲突面是"我们改过的文件 ∩ 上游改过的文件"，我们只有 3 个。
 **因此要取上游 core 里的东西，rebase 才是正路。**
+
+### 2.2 远端与推送约定（2026-09-21）
+
+| remote | 地址 | 用途 |
+|---|---|---|
+| `origin` | `https://github.com/triton-lang/triton.git` | **上游**：rebase 的基线，**只读**，我们不往它推任何东西 |
+| `fork` | `git@github.com:jialog0301/triton.git` | **我们的**：备份与将来的 PR 来源 |
+
+`fork` 上现有四个分支（2026-09-21 首次推送）：
+
+| 分支 | 说明 |
+|---|---|
+| `main` | 与上游 `origin/main` 同步（快进）。**本地 `main` 不要推上去**：它比 origin/main 多 3 个早期 Ventus 提交（pre-rebase 版本），推上去等于把 Ventus 提交塞进 main |
+| `feature/triton-ventus-v1` | 工作分支，已设 tracking 到 `fork/...`；唯一需要日常推的分支 |
+| `backup/ventus-pre-rebase` | rebase 前状态，**固定不动**（`0a3ec0a333`） |
+| `feature/ventus-launch-profile` | 另一 worktree 的独立分支（内容与工作分支里的 rebase 版本不等价，故一并备份） |
+
+（除 backup 那条外，各分支位置会随推送前进，以 `git log fork/<branch>` 为准；文档不记易变哈希。）
+
+日常工作流：
+
+```bash
+git fetch origin && git push fork origin/main:main   # 同步上游已合并的提交到 fork
+git push                                             # 推工作分支（tracking 已设）
+```
+
+要更新基线（rebase 到最新上游）走 §2.1 的流程；**rebase 干净 ≠ 能编译**，之后必须 `ninja triton`
+并跑全套测试（§2.1 记着上次就是这样发现 `getMulhiFuncName`、elementwise populate 签名的漂移的）。
+
+**刻意不入版本控制**的东西：`third_party/ventus/toolchain/version.json`（含绝对路径与外部组件漂移
+哈希，见 §8）、`tools/vecadd_baseline/vecadd_baseline`（构建产物）与 OpenCL 运行时产物、`build/`、
+`.triton-home/`。所以 fork 上自然没有 `version.json`——新克隆需要自行重录（这也是 §9 的未决项之一）。
 
 ## 3. 关键实现决策（含理由）
 
