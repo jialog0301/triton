@@ -93,6 +93,7 @@ git log --oneline <我们的基点>..<目标提交>^ -- <该补丁触及的文�
 | `feature/triton-ventus-v1` | 工作分支，已设 tracking 到 `fork/...`；唯一需要日常推的分支 |
 | `backup/ventus-pre-rebase` | rebase 前状态，**固定不动**（`0a3ec0a333`） |
 | `feature/ventus-launch-profile` | 另一 worktree 的独立分支（内容与工作分支里的 rebase 版本不等价，故一并备份） |
+| `docs/ventus-plans` | 21 个研究文档的归档（`docs/plans/*`，7.8 MB），基于上游 main + 一个提交；见下文"操作记录" |
 
 （除 backup 那条外，各分支位置会随推送前进，以 `git log fork/<branch>` 为准；文档不记易变哈希。）
 
@@ -105,6 +106,44 @@ git push                                             # 推工作分支（trackin
 
 要更新基线（rebase 到最新上游）走 §2.1 的流程；**rebase 干净 ≠ 能编译**，之后必须 `ninja triton`
 并跑全套测试（§2.1 记着上次就是这样发现 `getMulhiFuncName`、elementwise populate 签名的漂移的）。
+
+#### 里程碑 tag（2026-09-21 打）
+
+| tag | 指向 | 内容 |
+|---|---|---|
+| `ventus-m1-gate4` | `28d795bdf2` | M1 Gate 4：Spike 上跑通 + 版本化 manifest |
+| `ventus-linearlayout` | `e584238e02` | 索引 LinearLayout 化、2-D tile 解锁 |
+| `ventus-p0-measured` | `81c81af087` | 测量闭环：驱动可选 + cycle 数 + OpenCL 对照臂 |
+| `ventus-p1-done` | `d525e255f7` | P1：布局钉死 warp 连续 + 同形状公平对照 |
+| `backup/main-pre-reset` | `af6b189cf5` | 本地 `main` 重置前的旧位置（内容同在 `backup/ventus-pre-rebase`） |
+
+推 tag：`git push fork --tags`。
+
+#### rebase 政策与 2026-09-21 的判定
+
+**政策（用户决定）：除非对"线性引擎"（LinearLayout / 索引生成 / 布局与 convert-layout lowering）有
+实质提升，否则不 rebase。** 据此对上游自基点以来的 45 个提交做了实测判定：
+
+| 路径 | 上游改动数 |
+|---|---|
+| `include/triton/Tools/LinearLayout.h`、`lib/Tools/LinearLayout.cpp` | **0** |
+| `lib/Dialect/TritonGPU/IR/LinearLayoutConversions.cpp` | **0** |
+| `lib/Analysis/AxisInfo.cpp`（决定我们布局宽度的那个分析） | **0** |
+| `lib/Dialect/TritonGPU/Transforms/Coalesce*.cpp`、`Conversion/TritonGPUToLLVM/ConvertLayoutOpToLLVM.cpp` | **0** |
+| `lib/Dialect/TritonGPU/IR/Dialect.cpp` | 3（AMD Mfma UBSan 修复、BMM 小幅优化、legacy reshape 的 slice 编码推断——我们尚未使用 reshape） |
+| `lib/Conversion/TritonGPUToLLVM/Utility.cpp` | 2（都是 atomics 相关，本后端不支持 atomics） |
+
+**结论：不 rebase。** 另外"我们改过的文件 ∩ 上游改过的文件"为空 → 将来真要 rebase，git 层是干净的
+（但依旧必须 build + 全套测试，见 §2.1 的教训）。
+
+#### 2026-09-21 的操作记录
+
+- 本地 `main` 已**重置到 `origin/main`**（旧位置：tag `backup/main-pre-reset`；那 3 个提交同时也在
+  `backup/ventus-pre-rebase` 里）。副作用：主 worktree（`cuda2rvv/triton`）磁盘上移除了旧 main tip 里的
+  Ventus 文件（`third_party/ventus/`、`python/test/unit/ventus/`、Ventus 相关 docs）——它们在分支里都在，
+  只是那个 checkout 不再有；需要时 `git checkout ventus-p1-done -- third_party/ventus ...` 即可取回。
+- 21 个此前未跟踪的研究文档（`docs/plans/*`，7.8 MB，含架构图）已归档到分支 `docs/ventus-plans`
+  并推上 fork。它们**仍以未跟踪状态留在原 worktree**（用 plumbing 提交的，没有切换任何分支）。
 
 **刻意不入版本控制**的东西：`third_party/ventus/toolchain/version.json`（含绝对路径与外部组件漂移
 哈希，见 §8）、`tools/vecadd_baseline/vecadd_baseline`（构建产物）与 OpenCL 运行时产物、`build/`、
