@@ -204,9 +204,12 @@ OpenCL 臂经 POCL 的 ventus device 走 `libventus_driver.so`（auto_select）�
 `VENTUS_BACKEND` 与 Triton 臂选同一个模拟器（`spike`/`cyclesim`/`rtlsim`）：
 
 ```bash
-# POCL 的调用约定与 rodinia 的 runner 一致
+# POCL 的调用约定与 rodinia 的 runner 一致。VENTUS_INSTALL_PREFIX 必须给：
+# pocl_ventus.cc 用它拼编译/链接工具路径，缺失时 nm 找不到目标文件、随后
+# `std::string` 由空指针构造 → SIGABRT(-6)。
 PATH=$V/bin:$PATH LD_LIBRARY_PATH=$V/lib OCL_ICD_VENDORS=$V/lib/libpocl.so \
-POCL_DEVICES=ventus VENTUS_BACKEND=cyclesim ./vecadd_baseline kernel.cl 1024 32
+POCL_DEVICES=ventus VENTUS_BACKEND=cyclesim VENTUS_INSTALL_PREFIX=$V \
+./vecadd_baseline kernel.cl 1024 32 8
 
 # 一次跑两臂（各自一个进程，见下）
 .venv/bin/python third_party/ventus/tools/vecadd_baseline/measure.py --n 1024 --local 32 --backend cyclesim
@@ -229,6 +232,8 @@ POCL 在 `pocl_ventus.cc` 里硬编码 `ldssize=0x1000`、`pdssize=0x10000000` �
 
 其余限制：spike 只做功能、没有 cycle 数；RTL 覆盖不了 grid=32（§4.2 的 grid ≤ num_sm=2）；两臂各自的
 "总模拟时间"窗口不同（`measure.py` 因此统一取模拟器日志里的 `initialized→finished` 内核窗口）。
+`measure.py` 自己设置 OpenCL 臂所需的全部环境（含 `VENTUS_INSTALL_PREFIX`），因此**不依赖调用者是否
+source 过 `ventus-env/env.sh`**；失败时它会打印子进程输出尾部，而不是只给一个退出码。
 
 ### 4.4 P1 实测：布局、tile 形状与对照臂（2026-09-18）
 

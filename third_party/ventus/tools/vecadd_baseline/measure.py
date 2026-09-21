@@ -101,6 +101,12 @@ def ventus_env(backend: str) -> dict:
     env["OCL_ICD_VENDORS"] = str(INSTALL / "lib" / "libpocl.so")
     env["POCL_DEVICES"] = "ventus"
     env["VENTUS_BACKEND"] = backend
+    # The device derives its compile/link tool paths from this prefix (see
+    # `pocl_ventus.cc`). Inheriting whatever the shell happens to have is not
+    # enough: without it the fork's driver runs `nm` on a missing object and then
+    # aborts on `std::string` from a null pointer (SIGABRT). The repo rule is not
+    # to source `ventus-env/env.sh` in the normal shell, so the tool sets it.
+    env["VENTUS_INSTALL_PREFIX"] = str(INSTALL)
     if backend == "cyclesim":
         env["VENTUS_CYCLESIM_LOG_LEVEL"] = "info"
     return env
@@ -254,12 +260,18 @@ def main() -> int:
               f"mismatches={t.get('num_mismatches')} "
               f"kernel_model_ns={t.get('kernel_model_ns')} "
               f"driver_total_ns={t.get('driver_total_ns')}")
-        if t.get("error"):
-            print(f"  error: {t['error']}")
+        if t.get("error") or t.get("exit_status") not in (0, None):
+            print(f"  error: {t.get('error')}")
+            print(f"  triton output tail:\n{t.get('stderr_tail')}")
     if not args.skip_opencl:
         o = run_opencl_arm(args.n, args.local, args.opencl_items, args.backend)
         print(f"opencl   exit={o['exit_status']} {o['result_line']}")
         print(f"         kernel_model_ns={o['kernel_model_ns']}")
+        if o["exit_status"] != 0 or o["result_line"] is None:
+            # A negative status is a signal (e.g. -6 = SIGABRT), and the runtime
+            # writes the reason to its own output; print it here so a failure is
+            # self-explanatory rather than a bare exit code.
+            print(f"         opencl output tail:\n{o['stderr_tail']}")
     return 0
 
 
