@@ -40,6 +40,11 @@ createConvertTritonGPUToVentusLLVMPass();
 // Runs on the MLIR LLVM dialect; only added when `predication == "hardware"`.
 std::unique_ptr<OperationPass<ModuleOp>> createVentusSelectToBranchPass();
 
+// Reject divergent control-flow nesting deeper than the toolchain's validated
+// producer bound (two nested regions; VentusLLVMInputContract.md). Runs on
+// TritonGPU IR before `scf-to-cf`; fails the pass with an emitted diagnostic.
+std::unique_ptr<OperationPass<ModuleOp>> createVentusBoundedDivergencePass();
+
 // V1 global tt.load/tt.store lowering (per-element; masked accesses go
 // through llvm.masked.load/store on <1 x T> vectors).
 void populateVentusLoadStoreOpToLLVMPatterns(

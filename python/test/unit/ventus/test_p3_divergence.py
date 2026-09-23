@@ -35,6 +35,25 @@ def where_kernel(x_ptr, z_ptr, BLOCK: tl.constexpr):
     tl.store(z_ptr + offs, z)
 
 
+@triton.jit
+def two_nested_if_kernel(x_ptr, z_ptr, n, BLOCK: tl.constexpr):
+    offs = tl.arange(0, BLOCK)
+    x = tl.load(x_ptr + offs)
+    if n > 0:
+        if n > 1:
+            tl.store(z_ptr + offs, x)
+
+
+@triton.jit
+def three_nested_if_kernel(x_ptr, z_ptr, n, BLOCK: tl.constexpr):
+    offs = tl.arange(0, BLOCK)
+    x = tl.load(x_ptr + offs)
+    if n > 0:
+        if n > 1:
+            if n > 2:
+                tl.store(z_ptr + offs, x)
+
+
 def _compile(monkeypatch, tmp_path, predication):
     monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path / "cache"))
     src = ASTSource(fn=where_kernel, signature=dict(WHERE_SIGNATURE), constexprs={"BLOCK": 32})
@@ -90,3 +109,30 @@ def test_where_arm_on_spike(monkeypatch, tmp_path, predication):
         launcher.LaunchSpec(elf=elf_path, n_elements=128, local_size=32, kernel_name="where_kernel",
                             elements_per_program=32))
     assert result["num_mismatches"] == 0
+
+
+def _compile_if(monkeypatch, tmp_path, fn):
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path / "cache"))
+    src = ASTSource(fn=fn, signature={"x_ptr": "*fp32", "z_ptr": "*fp32", "n": "i32"}, constexprs={"BLOCK": 32})
+    return triton_compile(src, target=TARGET, options={"num_warps": 1})
+
+
+def test_two_nested_divergent_regions_are_accepted(monkeypatch, tmp_path):
+    """The validated bound is two nested regions, so two must still compile."""
+    assert _compile_if(monkeypatch, tmp_path, two_nested_if_kernel)
+
+
+def test_three_nested_divergent_regions_are_rejected(monkeypatch, tmp_path, capfd):
+    """One region past the bound is refused, with the bound named.
+
+    `scf-to-cf` runs after the check, so the diagnostic comes from the
+    bounded-divergence pass on the explicit `scf.if` nesting. The Python
+    exception is the pass manager's generic message; the specific bound is in
+    the MLIR diagnostic on stderr (captured at the fd level, since LLVM writes
+    it around Python's streams).
+    """
+    with pytest.raises(Exception, match="PassManager::run failed"):
+        _compile_if(monkeypatch, tmp_path, three_nested_if_kernel)
+    err = capfd.readouterr().err
+    assert "divergent control-flow nesting depth 3" in err
+    assert "ventus-bounded-divergence" in err

@@ -48,6 +48,9 @@ void init_triton_ventus(py::module_ &m) {
   passes.def("add_select_to_branch", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::ventus::createVentusSelectToBranchPass());
   });
+  passes.def("add_bounded_divergence", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::ventus::createVentusBoundedDivergencePass());
+  });
   passes.def("add_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::ventus::createConvertTritonGPUToVentusLLVMPass());
   });

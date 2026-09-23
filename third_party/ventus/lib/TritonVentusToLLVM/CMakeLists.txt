@@ -1,4 +1,5 @@
 add_triton_library(VentusGPUToLLVM
+    BoundedDivergence.cpp
     Membar.cpp
     SelectToBranch.cpp
     StripPointerHints.cpp
@@ -14,6 +15,7 @@ add_triton_library(VentusGPUToLLVM
     MLIRGPUDialect
     MLIRMathToLLVM
     MLIRReconcileUnrealizedCasts
+    MLIRSCFDialect
     MLIRUBToLLVM
 )
 

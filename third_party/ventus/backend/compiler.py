@@ -212,6 +212,9 @@ class VentusBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.ttgpuir.add_combine_tensor_select_and_if(pm)
+        # P3: reject nesting past the toolchain's validated divergent-region
+        # bound while the regions are still explicit scf (before scf-to-cf).
+        ventus.passes.add_bounded_divergence(pm)
         passes.convert.add_scf_to_cf(pm)
         # Shared memory: assign offsets and the module's total LDS size, then
         # insert the barriers that reuse of those buffers requires. Both run on
