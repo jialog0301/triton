@@ -24,6 +24,11 @@ Value emitWorkItemBuiltinCall(OpBuilder &rewriter, Location loc,
 // accesses contiguous, which is what this target's 32-lane vector unit wants.
 std::unique_ptr<OperationPass<ModuleOp>> createStripPointerHintsPass();
 
+// Insert the work-group barriers that shared-memory reuse needs, using the core
+// `ModuleMembarAnalysis` (see Membar.cpp). Must run after
+// `allocate-shared-memory` and before the TritonGPU-to-LLVM conversion.
+std::unique_ptr<OperationPass<ModuleOp>> createVentusMembarPass();
+
 // TritonGPU -> LLVM dialect conversion driven by the Ventus TargetInfo.
 // V1 baseline: elementwise / masked load-store / SPMD control flow on
 // riscv32 with warp size 32, global addrspace 1, local (shared) addrspace 3.

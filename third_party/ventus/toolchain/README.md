@@ -82,6 +82,18 @@ keyword on the emitted text; `disjoint` is a promise about the operands, not an
 instruction, a value, or any part of the computed result, so the rewrite is
 semantics-preserving. The same `opt -passes=verify` gate validates it.
 
+**The work-group barrier is inline asm.** The Ventus barrier is the custom-0
+instruction `barrier x0, x0, <imm>`, whose 5-bit immediate selects the fence
+domains (the pinned clang emits 1 for `CLK_LOCAL_MEM_FENCE`, 2 for
+`CLK_GLOBAL_MEM_FENCE`, 3 for both, and `llvm.riscv.ventus.barrier` is the
+intrinsic it lowers). That intrinsic is a Ventus LLVM 16 builtin: the
+Triton-side LLVM validates declarations against its own intrinsic table, so a
+call to it cannot cross the boundary in either direction. The backend emits
+`asm sideeffect "barrier x0, x0, N", ""()` instead, which assembles to the same
+instruction and is opaque to both compilers; the elf stage's
+`opt -passes=verify` plus `llc` keep verifying that the toolchain accepts it.
+Same family as the `llvm.masked.*` rule above.
+
 ## Upstream Rebase
 
 This worktree's Triton source tree has been **rebased onto `origin/main`** and now

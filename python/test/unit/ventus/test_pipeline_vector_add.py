@@ -29,6 +29,10 @@ TOOL_ROOT = Path("/home/weijiale/Code/cuda2rvv/ventus-env/install/bin")
 TARGET = GPUTarget("ventus", "ventus-gpgpu", 32)
 TARGET_DATA_LAYOUT = "e-m:e-p:32:32-i64:64-n32-S128-A5-G1"
 
+# Argument lists of the kernels below, in declaration order.
+VECTOR_ADD_SIGNATURE = {"x_ptr": "*fp32", "y_ptr": "*fp32", "z_ptr": "*fp32", "n": "i32"}
+ROW_SWAP_SIGNATURE = {"x_ptr": "*fp32", "z_ptr": "*fp32", "n": "i32"}
+
 
 @triton.jit
 def vector_add_kernel(x_ptr, y_ptr, z_ptr, n, BLOCK: tl.constexpr):
@@ -50,6 +54,27 @@ def vector_add_2d_kernel(x_ptr, y_ptr, z_ptr, n, BLOCK_M: tl.constexpr, BLOCK_N:
     x = tl.load(x_ptr + offs, mask=mask)
     y = tl.load(y_ptr + offs, mask=mask)
     tl.store(z_ptr + offs, x + y, mask=mask)
+
+
+@triton.jit
+def row_swap_kernel(x_ptr, z_ptr, n, BLOCK_N: tl.constexpr):
+    """`z[i, j] = x[1 - i, j]` for the `2 x BLOCK_N` tile each program owns.
+
+    With two warps the two rows live in different warps, so the exchange cannot
+    be done with registers alone: it goes through the CTA's shared window (write
+    the tile, rendezvous, read the other row back). That is what makes this the
+    first kernel here whose result depends on LDS and on the barrier ordering
+    the writes against the reads.
+    """
+    pid = tl.program_id(0)
+    rows = tl.arange(0, 2)[:, None]
+    cols = tl.arange(0, BLOCK_N)[None, :]
+    offs = pid * (2 * BLOCK_N) + rows * BLOCK_N + cols
+    m = offs < n
+    x = tl.load(x_ptr + offs, mask=m, other=0.0)
+    src_rows = (1 - rows) + tl.zeros([2, BLOCK_N], tl.int32)
+    picked = tl.gather(x, src_rows, axis=0)
+    tl.store(z_ptr + offs, picked, mask=m)
 
 
 @pytest.fixture
@@ -76,11 +101,11 @@ def _compile_vector_add(monkeypatch, tmp_path):
     return _compile(vector_add_kernel, {"BLOCK": 32}, 1, monkeypatch, tmp_path)
 
 
-def _compile(fn, constexprs, num_warps, monkeypatch, tmp_path):
+def _compile(fn, constexprs, num_warps, monkeypatch, tmp_path, signature=None):
     monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path / "cache"))
     src = ASTSource(
         fn=fn,
-        signature={"x_ptr": "*fp32", "y_ptr": "*fp32", "z_ptr": "*fp32", "n": "i32"},
+        signature=dict(signature) if signature else {"x_ptr": "*fp32", "y_ptr": "*fp32", "z_ptr": "*fp32", "n": "i32"},
         constexprs=constexprs,
     )
     return triton_compile(src, target=TARGET, options={"num_warps": num_warps})
@@ -260,6 +285,33 @@ def test_launch_profiles_are_self_consistent():
     assert all(p.lanes_per_warp == launcher.V1_LANES_PER_WARP for p in launcher.BUILTIN_PROFILES.values())
 
 
+def test_resource_declarations_are_windows_not_used_counts(tmp_path):
+    """SGPR/VGPR declarations are physical windows and get floored.
+
+    VRES reports LLVM's *used-register count* (8/7 for the two-warp
+    vector_add), but the RTL steps each warp's base by the declared usage and
+    banks registers by `wid[1:0] + regIdx[1:0]`, so that count makes warp 1
+    alias warp 0's high registers and jump to the metadata buffer (README 4.2).
+    The resolution has to floor SGPR/VGPR at the profile's window exactly as it
+    floors LDS/PDS at the crt0 stack contract.
+    """
+    launcher = importlib.import_module("triton.backends.ventus.launcher")
+    profile = launcher.BUILTIN_PROFILES["v1-64"]
+    elf = tmp_path / "k.elf"
+    elf.write_bytes(b"\x7fELF")
+
+    vres = {"vgpr": 7, "sgpr": 8, "lds": 20, "pds": 8}
+    spec = launcher.LaunchSpec(elf=elf, n_elements=128, local_size=64, num_warps=2, profile="v1-64")
+    assert launcher._resolve_resources(spec, profile, vres) == (
+        profile.lds_size, profile.pds_size, profile.sgpr_usage, profile.vgpr_usage)
+
+    # `force_resources` is the comparison escape hatch: the caller's numbers
+    # pass through unchanged, including an under-sized record.
+    forced = launcher.LaunchSpec(elf=elf, n_elements=128, local_size=64, num_warps=2, profile="v1-64",
+                                 force_resources=True, lds=0x1000, pds=0x1000, sgpr=8, vgpr=7)
+    assert launcher._resolve_resources(forced, profile, vres) == (0x1000, 0x1000, 8, 7)
+
+
 def test_vector_add_spike_exact_multiple(ventus_backend, monkeypatch, tmp_path):
     """Non-boundary control: N=32 (single work-group, full active warp)."""
     _compile_vector_add(monkeypatch, tmp_path)
@@ -306,23 +358,36 @@ def test_vector_add_on_rtl(ventus_backend, monkeypatch, tmp_path):
     `nocache` variant (L1 D-cache and L2 removed), which is why its cycle count
     is not directly a cache-accurate number.
 
+    The launch is the two-warp `v1-64` shape, which is the one that pins the
+    register-window contract: the RTL banks SGPR/VGPR by
+    `wid[1:0] + regIdx[1:0]` and steps each warp's base by the declared usage,
+    so declaring the VRES used-count (8/7) instead of a window makes warp 1
+    alias warp 0's registers and jump to the metadata buffer. `_resolve_resources`
+    floors the declarations at the profile's window, and with that floor every
+    lane's result is correct (README 4.2).
+
     The grid is limited to the RTL's SM count: `gpgpu/ventus/src/top/parameters.scala`
     declares `num_sm = 2`, and a grid beyond one wave aborts inside the model
     (`Assertion failed: UNDEFINED INSTRUCTION @ SM 0 warp 1 PC 0x90004000`) --
     the third work-group starts at the metadata buffer instead of the kernel
-    entry. n=64 is therefore the largest shape that runs today: grid=2, every
-    lane active.
+    entry. n=128 with a 64-element tile is grid=2, every lane active.
 
     Like cyclesim, the rtlsim driver can only be opened once per process, so this
     is the only RTL launch in the suite.
     """
-    _compile_vector_add(monkeypatch, tmp_path)
+    _compile(vector_add_kernel, {"BLOCK": 64}, 2, monkeypatch, tmp_path)
     elf_path = _stage_file(tmp_path / "cache", ".elf")
     launcher = importlib.import_module("triton.backends.ventus.launcher")
-    result = launcher.run_vector_add(launcher.LaunchSpec(elf=elf_path, n_elements=64, local_size=32, driver="rtlsim"))
+    profile = launcher.BUILTIN_PROFILES["v1-64"]
+    result = launcher.run_vector_add(
+        launcher.LaunchSpec(elf=elf_path, n_elements=128, local_size=64, num_warps=2,
+                            profile="v1-64", driver="rtlsim", elements_per_program=64))
     assert result["driver"] == "rtlsim"
     assert result["grid"] == 2
     assert result["num_mismatches"] == 0
+    # The window declarations reached the driver floored, not as the VRES count.
+    assert result["driver_sgpr_usage"] == profile.sgpr_usage
+    assert result["driver_vgpr_usage"] == profile.vgpr_usage
     assert result["simulated_time_ns"] > 0
 
 
@@ -388,3 +453,62 @@ def test_vector_add_two_warps_on_spike(ventus_backend, monkeypatch, tmp_path):
     assert result["driver_wf_size"] == 32
     assert result["driver_wg_size"] == 2
     assert result["num_mismatches"] == 0
+
+
+def test_row_swap_emits_shared_memory_and_barrier(ventus_backend, monkeypatch, tmp_path):
+    """The LDS + barrier pipeline, asserted on the emitted IR.
+
+    Three pieces, none of which existed before this milestone:
+
+    * `global_smem` is declared in address space 3 and sized from the
+      allocation the compiler computed (`ttg.shared` = 2 x 32 x 4 for the tile),
+      which is the number the launcher must pass to the driver as `ldsSize`.
+    * The staging accesses address that window: a store followed by a load in
+      `addrspace(3)`.
+    * The rendezvous between them is the target's own instruction, with the
+      5-bit fence immediate clang emits for `barrier(CLK_LOCAL_MEM_FENCE)` in
+      the ABI golden (`barrier_local.cl`). It travels as inline asm because the
+      consumer-side LLVM cannot declare `llvm.riscv.ventus.barrier` (it
+      validates declarations against its own builtin table), so the elf stage's
+      `opt -passes=verify` is what proves the toolchain still accepts it.
+    """
+    kernel = _compile(row_swap_kernel, {"BLOCK_N": 32}, 2, monkeypatch, tmp_path, signature=ROW_SWAP_SIGNATURE)
+    llir = _stage_file(tmp_path / "cache", ".llir").read_text()
+
+    assert kernel.metadata.shared == 256
+    assert "@global_smem = internal addrspace(3) global [256 x i8]" in llir
+    assert "store float %" in llir
+    assert "load float, ptr addrspace(3)" in llir
+    assert 'asm sideeffect "barrier x0, x0, 1", ""()' in llir
+
+    # The ELF carries the assembler's own LDS count in its resource record;
+    # it is the value the launcher hands the driver, and it must cover the
+    # compiler's allocation (the assembler adds its alignment pad on top).
+    resources = importlib.import_module("triton.backends.ventus.launcher")._resource_record(
+        _stage_file(tmp_path / "cache", ".elf"), "row_swap_kernel")
+    assert resources["lds"] >= kernel.metadata.shared
+
+
+def test_row_swap_on_spike(ventus_backend, monkeypatch, tmp_path):
+    """Cross-warp LDS handoff executes correctly on Spike.
+
+    `n=100` with a 64-element tile means the second program's tail is masked, so
+    the reference has to read masked-out elements back out of LDS as the 0.0 the
+    masked load produced. The result is only correct if the tile reached LDS and
+    the rendezvous ordered every warp's writes before any warp's reads -- with
+    two warps the two rows are in different warps, so a missing or misplaced
+    barrier leaves the swap half-done.
+    """
+    _compile(row_swap_kernel, {"BLOCK_N": 32}, 2, monkeypatch, tmp_path, signature=ROW_SWAP_SIGNATURE)
+    elf_path = _stage_file(tmp_path / "cache", ".elf")
+    launcher = importlib.import_module("triton.backends.ventus.launcher")
+    result = launcher.run_row_swap(
+        launcher.LaunchSpec(elf=elf_path, n_elements=100, local_size=64, num_warps=2, profile="v1-64",
+                            kernel_name="row_swap_kernel", elements_per_program=64, keep_log=True), block_n=32)
+    assert result["grid"] == 2
+    assert result["num_mismatches"] == 0
+    # The launch declared the kernel's real LDS demand, not the profile floor.
+    assert result["resource_record"]["lds"] >= 256
+    assert result["driver_lds_size"] >= result["resource_record"]["lds"]
+    # The rendezvous really executed: it is in the instruction log.
+    assert any("barrier" in line for line in result["spike_log"].splitlines())

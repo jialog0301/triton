@@ -189,8 +189,9 @@ class VentusBackend(BaseBackend):
         pm.run(mod, "make_ttgir")
         metadata["num_warps"] = options.num_warps
         metadata["num_stages"] = options.num_stages
-        # V1 kernels use no shared memory; the allocation analysis lands with
-        # barrier/local-memory support (barrier_local milestone).
+        # Provisional: shared memory is allocated in the llir stage, which is
+        # where `ttg.shared` becomes known and overwrites this. Kept here so
+        # metadata is complete if only the ttgir stage runs.
         metadata["shared"] = 0
         return mod
 
@@ -205,11 +206,23 @@ class VentusBackend(BaseBackend):
         pm.enable_debug()
         passes.ttgpuir.add_combine_tensor_select_and_if(pm)
         passes.convert.add_scf_to_cf(pm)
+        # Shared memory: assign offsets and the module's total LDS size, then
+        # insert the barriers that reuse of those buffers requires. Both run on
+        # TritonGPU IR, before the conversion consumes the offsets.
+        passes.ttgpuir.add_allocate_shared_memory(pm)
+        ventus.passes.add_membar(pm)
         ventus.passes.add_to_llvmir(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.convert.add_reconcile_unrealized_casts(pm)
         pm.run(mod, "make_llir")
+        # The `alloc/shared-memory` pass above is the only writer of
+        # `ttg.shared`; report what it allocated rather than a constant. The
+        # launcher takes the size it hands the driver from the ELF's VRES
+        # record instead (that is the assembler's own count, including its
+        # alignment pad), so this value is the backend's independent record of
+        # the same number and the two are checked against each other.
+        metadata["shared"] = src.get_int_attr("ttg.shared") or 0
         # MLIR LLVM dialect -> textual LLVM IR. Optimization is owned by the
         # external Ventus toolchain; the consumer side only attaches the ABI
         llvm.init_targets()

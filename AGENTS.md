@@ -40,8 +40,13 @@ python -m pytest python/test/unit/ventus/ -q
 `test_vector_add_on_spike` and `test_vector_add_manifest_gate4` are the M1
 Gate 4 (Spike execution) baseline: the manifest is only accepted by
 `ventus.VentusKernelMetadata.validate()` after `launcher_input`/`test_result`
-are recorded. Native libtriton changes (e.g. `third_party/ventus/triton_ventus.cc`
-bindings) require a rebuild first: `cd "$(BUILD_DIR)"; ninja triton`.
+are recorded. The P2 (LDS + barrier) baseline is
+`test_row_swap_emits_shared_memory_and_barrier` (emitted IR: `global_smem` in
+`addrspace(3)` sized from `ttg.shared`, LDS store/load, the barrier asm) and
+`test_row_swap_on_spike` (cross-warp exchange through LDS, `num_mismatches=0`;
+see `third_party/ventus/README.md` §4.5). Native libtriton changes (e.g.
+`third_party/ventus/triton_ventus.cc` bindings) require a rebuild first: `cd
+"$(BUILD_DIR)"; ninja triton`.
 
 ## C++ Guidelines
 - In C++, never put side-effecting code in `assert`. Assertions may be compiled out, so perform mutations and other required computation before the assertion and assert only the resulting condition. This guideline does not apply to Python `assert` statements.

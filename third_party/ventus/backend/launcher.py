@@ -438,12 +438,51 @@ def stage_elf(elf: Path, staging_dir: Path | None = None) -> Path:
     return staged
 
 
-def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
-    """Launch the standard vector_add kernel and return result + evidence.
+def _resolve_resources(spec: LaunchSpec, profile: VentusLaunchProfile, resources: dict) -> tuple[int, int, int, int]:
+    """Resolve the four launch declarations `(lds, pds, sgpr, vgpr)`.
 
-    Kernel ABI (from the TTGIR golden): x_ptr, y_ptr, z_ptr, n.
-    `launch_dir` is the staging directory for the short-path ELF; it defaults
-    to the driver-safe hash-keyed temp dir used by `stage_elf`.
+    The compiled kernel's own VRES record wins over the profile fallback, but
+    every declaration is a *physical window*, not a used-resource count, so the
+    record is floored at the profile's declaration:
+
+    * LDS/PDS at the crt0 stack contract: crt0.S gives every warp 1 KiB of
+      local memory (`sp = wid * 1024 + CSR_LDS`) and spike_device::run reserves
+      the private segment, so a launch below those floors would alias warp
+      stacks.
+    * SGPR/VGPR at the profile's window: the RTL banks registers by
+      `wid[1:0] + regIdx[1:0]` and steps each warp's base by the declared
+      usage, so a window narrower than the kernel's real high-water mark makes
+      adjacent warps alias (README 4.2). VRES reports LLVM's *used-register
+      count*, which is not that window.
+
+    `force_resources` bypasses both the record and the floors, for a
+    cross-implementation comparison that must declare the same numbers.
+    """
+    if spec.force_resources:
+        return spec.lds, spec.pds, spec.sgpr, spec.vgpr
+    lds = max(resources.get("lds", spec.lds), profile.lds_size)
+    pds = max(resources.get("pds", spec.pds), profile.pds_size)
+    sgpr = max(resources.get("sgpr", spec.sgpr), profile.sgpr_usage)
+    vgpr = max(resources.get("vgpr", spec.vgpr), profile.vgpr_usage)
+    return lds, pds, sgpr, vgpr
+
+
+def _launch(spec: LaunchSpec, launch_dir: Path | None, plan) -> dict:
+    """Launch `spec.elf` on the Ventus device and return result + evidence.
+
+    Everything kernel-independent lives here: profile/geometry agreement, the
+    grid, resource resolution (the compiled VRES record floored at the profile,
+    see `_resolve_resources`), the short-path staging the driver's fixed-size
+    buffers force, the launch metadata, and the driver lifecycle. `plan`
+    supplies what is kernel-specific — the host inputs, the argument block, and
+    the host reference:
+
+        plan(spec, driver, n, nb, grid) -> (argbuf: bytes, out_ptr: int,
+                                            expected: list[float])
+
+    `out_ptr` is a device buffer the plan allocated and zeroed; the comparison
+    reads `len(expected)` elements back from it. One launch path means a new
+    kernel shape cannot drift on the parts that are not kernel-specific.
     """
     if spec.scalar == 0:
         spec.scalar = spec.n_elements
@@ -467,22 +506,7 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
     nb = n * 4
     entry = _kernel_entry(spec.elf, spec.kernel_name)
     resources = _resource_record(spec.elf, spec.kernel_name)
-
-    # The compiled kernel's own resource record wins; the profile value is the
-    # fallback for kernels without the section. LDS and PDS are floored at the
-    # crt0 stack contract: crt0.S gives every warp 1 KiB of local memory
-    # (`sp = wid * 1024 + CSR_LDS`) and spike_device::run reserves the private
-    # segment, so a launch below those floors would alias warp stacks. The
-    # compiled value is still carried in the evidence for launch-time checks.
-    # `force_resources` bypasses both the record and the floors, for a
-    # cross-implementation comparison that must declare the same numbers.
-    if spec.force_resources:
-        lds, pds = spec.lds, spec.pds
-    else:
-        lds = max(resources.get("lds", spec.lds), profile.lds_size)
-        pds = max(resources.get("pds", spec.pds), profile.pds_size)
-    sgpr = spec.sgpr if spec.force_resources else resources.get("sgpr", spec.sgpr)
-    vgpr = spec.vgpr if spec.force_resources else resources.get("vgpr", spec.vgpr)
+    lds, pds, sgpr, vgpr = _resolve_resources(spec, profile, resources)
 
     driver = _Driver(INSTALL / "lib" / DRIVERS[spec.driver], spec.driver)
     # Spike's driver formats the ELF path into fixed-size buffers, so a
@@ -490,16 +514,7 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
     # path. Log collection happens after the launch (see below).
     staged = stage_elf(spec.elf, launch_dir)
     try:
-        x = [float(i + 1) for i in range(n)]
-        y = [float(2 * i) for i in range(n)]
-        xa = driver.alloc(nb)
-        ya = driver.alloc(nb)
-        za = driver.alloc(nb)
-        driver.to_dev(xa, struct.pack(f"{n}f", *x))
-        driver.to_dev(ya, struct.pack(f"{n}f", *y))
-        driver.to_dev(za, bytes(nb))
-
-        argbuf = struct.pack("<IIII", xa, ya, za, spec.scalar)
+        argbuf, out_ptr, expected = plan(spec, driver, n, nb, grid)
         arga = driver.alloc(len(argbuf))
         driver.to_dev(arga, argbuf)
 
@@ -553,12 +568,11 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
             simulated_ns = _ModelTime(so, symbol).ns(driver.dev)
         else:
             simulated_ns = None
-        z = struct.unpack(f"{n}f", driver.from_dev(za, nb))
+        got = struct.unpack(f"{len(expected)}f", driver.from_dev(out_ptr, len(expected) * 4))
     finally:
         driver.close()
 
-    expect = [a + b for a, b in zip(x, y)]
-    mismatches = [(i, got, exp) for i, (got, exp) in enumerate(zip(z, expect)) if abs(got - exp) > 1e-6]
+    mismatches = [(i, got, exp) for i, (got, exp) in enumerate(zip(got, expected)) if abs(got - exp) > 1e-6]
 
     result = {
         "kernel": spec.kernel_name,
@@ -578,6 +592,8 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
         "driver_wg_size": md.wg_size,
         "driver_lds_size": md.ldsSize,
         "driver_pds_size": md.pdsSize,
+        "driver_sgpr_usage": md.sgprUsage,
+        "driver_vgpr_usage": md.vgprUsage,
         "elf": str(spec.elf),
         "elf_sha256": _sha256(spec.elf),
         "staged_elf": str(staged),
@@ -589,7 +605,7 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
         "simulated_time_ns": simulated_ns,
         "num_mismatches": len(mismatches),
         "first_mismatches": mismatches[:8],
-        "z_first8": z[:8],
+        "z_first8": got[:8],
     }
     # spike_device writes the instruction log next to the *staged* ELF.
     if spec.keep_log:
@@ -597,6 +613,67 @@ def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
         if log_path.is_file():
             result["spike_log"] = log_path.read_text(errors="replace")
     return result
+
+
+def _vector_add_plan(spec, driver, n, nb, grid):
+    """`z[i] = x[i] + y[i]` over [0, n): the ABI the launcher was built for."""
+    x = [float(i + 1) for i in range(n)]
+    y = [float(2 * i) for i in range(n)]
+    xa = driver.alloc(nb)
+    ya = driver.alloc(nb)
+    za = driver.alloc(nb)
+    driver.to_dev(xa, struct.pack(f"{n}f", *x))
+    driver.to_dev(ya, struct.pack(f"{n}f", *y))
+    driver.to_dev(za, bytes(nb))
+    return struct.pack("<IIII", xa, ya, za, spec.scalar), za, [a + b for a, b in zip(x, y)]
+
+
+def run_vector_add(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
+    """Launch the standard vector_add kernel and return result + evidence.
+
+    Kernel ABI (from the TTGIR golden): x_ptr, y_ptr, z_ptr, n.
+    `launch_dir` is the staging directory for the short-path ELF; it defaults
+    to the driver-safe hash-keyed temp dir used by `stage_elf`.
+    """
+    return _launch(spec, launch_dir, _vector_add_plan)
+
+
+def _row_swap_plan(block_n):
+    """Host side of `row_swap_kernel`, which exchanges the two rows of a
+    `2 x block_n` tile through shared memory (see the kernel's docstring)."""
+
+    def plan(spec, driver, n, nb, grid):
+        x = [float(i + 1) for i in range(n)]
+        xa = driver.alloc(nb)
+        za = driver.alloc(nb)
+        driver.to_dev(xa, struct.pack(f"{n}f", *x))
+        driver.to_dev(za, bytes(nb))
+
+        tile = 2 * block_n
+        expected = []
+        for m in range(n):
+            # Tile position `m` of program `pid`: row `i`, column `j`. The
+            # kernel swaps rows, so the value comes from row `1 - i` of the
+            # same column; a masked element was loaded as 0.0 and is what the
+            # gather reads back out of LDS.
+            pid, t = divmod(m, tile)
+            i, j = divmod(t, block_n)
+            src = pid * tile + (1 - i) * block_n + j
+            expected.append(x[src] if src < n else 0.0)
+        return struct.pack("<III", xa, za, spec.scalar), za, expected
+
+    return plan
+
+
+def run_row_swap(spec: LaunchSpec, block_n: int = 32, launch_dir: Path | None = None) -> dict:
+    """Launch `row_swap_kernel` (LDS + work-group barrier) and check it.
+
+    Kernel ABI: x_ptr, z_ptr, n. `block_n` must match the `BLOCK_N` the kernel
+    was compiled with; each program covers a `2 x BLOCK_N` tile of the input
+    range, so `spec.elements_per_program` has to be `2 * block_n`:
+    `spec.n_elements` stays the length of the buffers.
+    """
+    return _launch(spec, launch_dir, _row_swap_plan(block_n))
 
 
 def _sha256(path: Path) -> str:

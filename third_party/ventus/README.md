@@ -27,7 +27,8 @@ MLIR/LLVM 下降低源，`toolchain/` 记录工具链身份与边界事实，`re
 | Spike 执行 | 完成 | `test_vector_add_on_spike`：指令日志出现 `vfadd`/`vsw12.v`，grid=4，`num_mismatches=0`，驱动 `wf_size=32`/`wg_size=1` |
 | 版本化 manifest | 完成 | `test_vector_add_manifest_gate4`；编译 gate 记录 argv/stdout/stderr/exit/tool 哈希 |
 | 索引生成（布局无关） | 完成 | 手写 1-D 公式已删除，改用核心 `populateMakeRangeOpToLLVMPattern`（`ttg::toLinearLayout` + `emitIndices`）；2-D tile 与 2-warp 均在 Spike 上 `num_mismatches=0` |
-| 单测 | 28 项：27 通过 | `python/test/unit/ventus/`；唯一红是 `test_toolchain_identity` 的外部 gpgpu 组件漂移（见 2.1） |
+| **LDS + barrier（P2）** | 完成 | `allocate-shared-memory` + `ventus-membar` 进管线；`storeDShared`/`loadDShared`/`barrier` 三钩子落地；跨 warp 的 `tl.gather` 行交换核在 Spike/cyclesim 上 `num_mismatches=0`（§4.5） |
+| 单测 | 34 项：33 通过 | `python/test/unit/ventus/`；唯一红是 `test_toolchain_identity` 的身份记录漂移（记录里的 worktree 内容哈希与 `libtriton` 哈希是快照值，任何改动都会使该断言变红，见 2.1 与 §9） |
 | cycle 级测量 | 打通（基线数字待补） | `LaunchSpec.driver` 可选 spike / cyclesim / rtlsim / gvm / auto；cyclesim 已能跑 grid>1 并回报模型时间：n=32/64/100 → 15830/20780/31910 ns（10 ns 时钟，见 §4.1） |
 | ELF 体积 | 26 KB | `--gc-sections -u <kernel>` 裁剪前为 14 MB |
 | 后端可用性 | 目标 `GPUTarget("ventus","ventus-gpgpu",32)`；`triton.compile` 可用 | `driver.py` 仍是 stub，`kernel[grid](...)` 尚不可用 |
@@ -185,6 +186,14 @@ git push                                             # 推工作分支（trackin
    `emitIndices(...)`；同时注册核心 `populateViewOpToLLVMPatterns`（`expand_dims`/`broadcast`/
    `splat`/…），后端不再自带 splat lowering。三条硬门槛（rank 必须为 1、编码必须恰是
    `BlockedEncodingAttr`、公式里 `warp * 32` 隐含 1-D）随之消失。见第 6 节。
+7. **共享内存（LDS）走模块级 `addrspace(3)` 全局量 `global_smem`，barrier 走 inline asm（P2）**：
+   核心用 `LLVM::getStackPointer` **按名字**查 `global_smem` 才是共享窗口的基址，NVIDIA/AMD 把它声明成
+   外部符号、由运行时绑定动态基址；Ventus 没有这个运行时钩子，工具链是把 `addrspace(3)` 对象放进
+   work-group 的片上窗口、用 `crt0.o` 设好的基址寄存器寻址（入口 `addi s0, s0, <size>`，访问
+   `s0 - <size>` + 偏移），所以这里给的是**有大小的 internal 定义**，大小直接取 `ttg.shared`。
+   barrier 的 5 位立即数在 clang 那边是 fence 位掩码（local=1、global=2、两者=3），因此它作为
+   inline asm 发射：`llvm.riscv.ventus.barrier` 只存在于 Ventus LLVM 16，消费端 LLVM 会按自己的内建表
+   拒绝该声明。见 §4.5 与 §8。
 
 ## 4. 硬件资源模型（RTL 事实）
 
@@ -212,7 +221,9 @@ call void @llvm.riscv.ventus.barrier(i32 1)
 
 VRES v1 资源记录：24 字节，字段序 `[vgpr, sgpr, lds, pds]`，由 Ventus LLVM 16 后端依据
 `ventus_kernel` 约定自动生成，落在 `.ventus.resource.<kernel>` 段；`backend/manifest.py` 解析后
-填入 `md.resources`。**注意 LDS/PDS 的声明值尚需与真实需求一致**，当前 `metadata["shared"]` 仍写死 0。
+填入 `md.resources`。**LDS/PDS 的声明值已与真实需求一致（P2，2026-09-22）**：`metadata["shared"]`
+取 `allocate-shared-memory` 写下的 `ttg.shared`，汇编器在 VRES 里报的是同一个数再加它自己的对齐
+填充（实测 256 → 272），launcher 用的正是 VRES 那个值（§4.5）。
 
 ### 4.1 驱动与 cycle 级测量（2026-09-17 打通）
 
@@ -264,6 +275,46 @@ grid=3/4 的失败是**多波分发**问题：第 3 个 work-group 从 metadata 
 而 RTL 的 `num_sm = 2`（`gpgpu/ventus/src/top/parameters.scala:7`），一波只放得下 2 个 CTA。
 **所以 RTL 目前的可跑上限是 grid ≤ 2**，我们现有测试用的 grid=4 形状还跑不了。
 
+**2026-09-22 修正一条此前的误判：2 warp/CTA 在这条链路上"不可用"不是 RTL 的多 warp 能力问题，
+而是每 warp 寄存器窗口的声明契约被违反。** RTL 把两个 warp 都正确发射了（PC、warp id、每 warp 栈、
+lane 区间全对，warp 1 拿到 lane 0x20–0x3f）；挂掉的是声明给驱动的每 warp 寄存器窗口小于内核真实
+窗口，导致相邻 warp 的寄存器物理别名。
+
+RTL 用"bank 交织"寻址 SGPR/VGPR：`bankID = wid[1:0] + regIdx[1:0]`、
+`rsAddr = (sgpr_base(wid) >> 2) + (regIdx >> 2)`（`pipeline/operandCollector.scala:95,110`，
+寄存器号不做掩码），而每 warp 的 `sgpr_base`/`vgpr_base` 步长正是 metadata 里声明的
+`sgprUsage`/`vgprUsage`（`cta/cu_interface.scala:85`）。我们此前把 VRES 的**已用寄存器计数**
+（LLVM 后端产物，`RISCVRegisterInfo.cpp:205-208`，文档明确它不是占用率模型）当窗口下发：2-warp
+ELF 实测 `sgpr=8, vgpr=7`，于是 warp0 占每 bank 的字 0–7，warp1 只上移 2 个字（`8>>2`），
+`warp1.x1` 落在 `warp0.x10` 的槽位上——而 `warp0.x10` 正是 KNL 元数据缓冲地址。trace 直接可见：
+
+```
+warp0 0x80000320 lsu.w x 1 op 3 80000260   ← 正确 ra
+warp1 0x80000320 lsu.w x 1 op 3 90004000   ← = warp0.x10 = CSR_KNL 元数据缓冲地址
+warp1 0x80000340 lw    x 1  = 90004000
+warp1 0x80000348 ret   → 跳 90004000
+→ UNDEFINED INSTRUCTION @ SM 0 warp 1 PC 0x90004000: 0x800000b8
+```
+
+定量验证（n=128, BLOCK=64, `num_warps=2`, grid=2, rtlsim，逐点独立进程）：
+
+| 声明 sgpr/vgpr | 结果 |
+|---|---|
+| 8 / 7（VRES 计数，旧 launcher 默认） | abort，`PC 0x90004000` |
+| 8 / 64 | abort → 致命项是 **SGPR** 窗口 |
+| 32 / 32 | 跑完，96/128 错（内核用到 v34，VGPR 窗口不够） |
+| 32 / 36 | 通过，0 mismatch（36 是 v34 跨 bank 上取整后的下限） |
+| 32 / 64 | 通过，0 mismatch |
+| 64 / 64（POCL 的声明） | 通过，0 mismatch |
+
+这也解释了本小节更早记的两条现象：grid=1 的"错一半"是 VGPR 窗口重叠、grid=2 的 abort 是 SGPR
+窗口重叠；spike（每 warp 独立 processor/寄存器堆）与 cyclesim（不建模这条 SGPR/VGPR 占用契约）
+都不受影响。
+
+**修复**：`_resolve_resources` 现在把 SGPR/VGPR 也 floor 到 profile 声明的窗口（`v1-32`/`v1-64`
+都是 64/64），与 LDS/PDS 的 floor 写法一致（见 §4.5）；`force_resources` 仍保留为跨实现对照的
+旁路。
+
 **关键是这份 RTL 是 nocache 变体**：`gpgpu/sim-verilator-nocache` 去掉了 L1 D-cache 与 L2
 （保留 L1 I-cache，日志自报 "you are running no-cache version RTL"）。因此"谁更接近真实硬件"要分轴：
 
@@ -281,8 +332,8 @@ rtlsim 也是**一进程一次**：第二次 `vt_dev_open` 因 driver 里
 
 **因此 RTL 不参与日常验证**（见 §4.1 的决策）：装着的模型是 nocache 变体、grid 上限 2、没有版本记录
 （`gpgpu` 树正在被实时编辑），任何一条都足以让"每次提交跑 RTL"失去意义。套件里保留
-`test_vector_add_on_cyclesim` / `test_vector_add_on_rtl` 两个小测试，只用于守护驱动接线本身
-（各 ~0.2 s）；功能正确性的权威仍是 spike。
+`test_vector_add_on_cyclesim` / `test_vector_add_on_rtl` 两个小测试：前者守驱动接线，后者用 2-warp
+形状守 §4.2 的寄存器窗口契约；功能正确性的权威仍是 spike。
 
 ### 4.3 跨实现对照：Triton vs OpenCL（2026-09-17 建立）
 
@@ -371,7 +422,33 @@ warp/CTA**；`v1-64` 只适合少数需要 CTA 内协作的场景。
 去掩码"值约 7%：masked 87020 vs unmasked 80930 @BLOCK=128/grid=8），但**块模型下的每元素指令数**
 （掩码比较、谓词化访存、`vmv` 搬运）尚未逐条拆解，也还没实现任何"整段掩码一次判"的 lowering 优化。
 
+### 4.5 P2 实测：LDS + barrier（2026-09-22）
 
+**这一阶段的语义判据是一个"必须跨 warp"的核**：`row_swap_kernel` 取每个程序独占的 `2 x 32` tile，
+输出 `z[i, j] = x[1 - i, j]`——两行落在**不同 warp**（`warpsPerCTA = [2, 1]`），所以交换只能经共享窗口：
+每 lane 把自己的元素写进 LDS，work-group rendezvous 排开写与读，再按索引读回另一行。核对
+Host 参考要复现"被掩码元素载入为 0.0"再被读出的语义，所以尾程序的部分掩码也是被验证的。
+
+降级路径的选择（`tl.gather` 而不是 `tl.sum`）：`tt.gather` 在 gather 轴跨 warp 时走
+`emitGatherInShared`（写 LDS → barrier → 按索引读），**完全用不到 warp 内的 lane 间搬运**；而
+`tt.reduce` 仍不可用——实测一个"归约轴完全落在 warp 之间"的 tile（`2 x 32`，`warpsPerCTA=[2,1]`，
+`tl.sum(x, axis=0)`）也仍然落到 `shuffleXor` 上失败。这颗硬件没有 lane 间数据交换指令
+（`gpgpu/docs/Ventus-GPGPU-doc.md`：不支持 shuffle 一类指令），所以 reduce 的落地要等 P3 的
+lane 间原语；在此之前它是**响亮失败**（`unsupported: shuffle xor`），不静默。
+
+| 形状 | 模拟器 | 结果 | 备注 |
+|---|---|---|---|
+| n=100, tile 64, grid=2, `num_warps=2`（v1-64） | spike | `num_mismatches=0` | 尾程序部分掩码；4 条 `barrier` 指令确实执行 |
+| n=128, tile 64, grid=2, `num_warps=2`（v1-64） | cyclesim | `num_mismatches=0`，**58760 ns**（5876 cycle） | 全 lane 活跃，无掩码干扰 |
+| n=128, 同上 | rtlsim | `num_mismatches=0`（2026-09-22 修复寄存器窗口声明后） | 2 warp/CTA 的窗口契约见 §4.2；`_resolve_resources` 把 sgpr/vgpr floor 到 profile 的 64/64 |
+
+资源账单（VRES，n=128 形状）：`vgpr=7, sgpr=7, lds=272, pds=16`。其中 `lds=272` 是汇编器对
+`global_smem`（256 B，即 `ttg.shared`）加自己的对齐填充后的计数；launcher 用的就是它，profile 的
+`lds_size` 下限（4096，crt0 的每 warp 1 KiB 栈契约）更高，因此实际下发的是 4096。
+
+**仍未闭合**：这套 lowering 只为"跨 warp 搬运"这一条路服务。`tt.reduce` 的 warp 内 shuffle、
+`tl.histogram` 的共享原子、warp 内 `tt.gather` 都仍是响亮失败——它们是 P3（分歧/ lane 间数据交换）
+与后续阶段的题目，不是本阶段的遗漏。
 
 ## 5. 与 NVIDIA / AMD 的 pass 对照（MMA 视角）
 
@@ -486,7 +563,7 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
 |---|---|---|---|
 | **P0** | 测量闭环：~~驱动可选 + cycle 级数字~~（§4.1）、~~OpenCL(POCL) 基线~~（§4.3 已建立，首个受控数字待补：先对齐两臂的资源声明）。*已降级*：RTL 多波分发、cyclesim↔RTL 模型校准——验证路径已定 spike（§4.1） | — | 使后续所有结论可证 |
 | **P1** | ~~布局/向量化/占用率~~：索引（第 6 节）、布局偏好（§4.4 + `StripPointerHints`）、tile/warp 曲线与**同形状** OpenCL 对照（§4.4）均已完成。**已移交下一阶段**：块模型下的每元素指令数（掩码/地址算术）——grid=2 时比等价的 OpenCL 标量循环慢 33%，证据与嫌疑见 §4.4 末段 | — | "Triton 生成 vs OpenCL/手写"主结果（同形状：grid=8 平、grid=4 慢 6.6%、各自最优慢 21.7%） |
-| **P2** | LDS + barrier：`add_allocate_shared_memory` + membar + 实现 `storeDShared`/`loadDShared`；barrier 走文本注入或 inline asm | 核心基建已备 | 支撑 tiling/reduction/MMA |
+| **P2** | ~~LDS + barrier~~：**已完成（2026-09-22）**。`allocate-shared-memory` + `ventus-membar` 进管线；`global_smem`（`addrspace(3)`，大小取 `ttg.shared`）+ `storeDShared`/`loadDShared`/`barrier` 三钩子；`ttg.barrier` 直接降到 `barrier x0, x0, <fence 掩码>`（inline asm，见 §8）。判据：跨 warp 的 `tl.gather` 行交换核在 spike / cyclesim / rtlsim 上 `num_mismatches=0`（§4.5；rtlsim 需要 §4.2 的寄存器窗口声明修复）。**仍属后续阶段**：warp 内 shuffle（`tt.reduce` 的 warp 内部分）、共享原子（`tl.histogram`）、warp 内 `tt.gather` | 核心基建已备 | 支撑 tiling/reduction/MMA；跨 warp 搬运的通路已打通 |
 | **P3** | 分歧硬件（`vbranch`/`join`/掩码栈）与现有软件谓词路径做 A/B | 工具链（新内建/CC） | **论文核心差异化**（软件谓词一臂已实现） |
 | **P4** | LLVM 版本对齐 → 一等 Ventus 内建，移除文本边界与相关 hack | 工具链（大工程） | 工程债清理，P3/P5 的前提 |
 | **P5** | M4K8N4 MMA：编码属性 + accelerate-matmul + dot lowering | **M3 的指令/寄存器布局契约** | 性能上界 |
@@ -539,9 +616,39 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
 - **RTL 的 grid 上限 = `num_sm` = 2**：超过一波的 grid 会在模型内 abort
   （`UNDEFINED INSTRUCTION ... PC 0x90004000`，第 3 个 work-group 从 metadata 缓冲区取指）。多波分发
   修好之前，RTL 只能验证 grid ≤ 2 的形状。
+- **SGPR/VGPR 声明是物理窗口，不是已用寄存器计数**（§4.2）：RTL 按
+  `wid[1:0] + regIdx[1:0]` 交织寻址、每 warp 基址按声明的 usage 步进，所以把 VRES 的 used-count
+  当窗口下发会让相邻 warp 别名（2-warp 时 warp1 的 ra 落到 warp0 的 KNL 基址，`ret` 跳进 metadata
+  缓冲区）。launcher 现在把 sgpr/vgpr floor 到 profile 声明的窗口（64/64），与 lds/pds 一致。
+  要 cycle 数就用 cyclesim，要功能真值就用 spike。
 - **装着的 `libVentusRTL.so` 是 nocache 变体**（L1D/L2 被移除）。它的 cycle 数只代表核心微架构，
   不能当 cache-accurate 的硬件性能数字；引用时须写明变体。
 - **不同模拟器的"总时间"窗口不同**（内核 finish 时刻 vs 仿真收尾），跨模拟器比数字前先统一窗口。
+- **共享窗口的基址是"按名字"找的**：核心 `LLVM::getSharedMemoryBase` 走 `getStackPointer`，后者在
+  模块里查名为 `global_smem` 的全局量并取它的地址。NVIDIA/AMD 把它声明成外部符号（运行时绑定动态
+  基址）；Ventus 没有这个钩子，必须给**有大小的 internal 定义**（`addrspace(3)`，大小 = `ttg.shared`），
+  否则要么链接期找不到符号、要么 LDS 记账与真实需求脱节。名字或大小写错了不会静默通过，但会表现为
+  `assert(op->hasAttr("allocation.offset"))` 或链接失败。
+- **`barrier` 只能走 inline asm**：`llvm.riscv.ventus.barrier` 是 Ventus LLVM 16 的专有内建，消费端
+  LLVM 按自己的内建表校验声明（同 `llvm.masked.*`），因此声明过不了翻译器。发射
+  `asm sideeffect "barrier x0, x0, N", ""()` 得到的是同一条指令，且两边都能编。
+- **barrier 立即数是 fence 位掩码，不是"屏障编号"**：clang 对 `barrier(CLK_LOCAL_MEM_FENCE)` 发 1、
+  `CLK_GLOBAL_MEM_FENCE` 发 2、两者并起来发 3（实测四种组合），所以 Triton 的 `AddrSpace` 掩码按
+  local→bit0、global→bit1 折叠。RTL 的 warp 调度器不看这个立即数（`warp_schedule.scala` 只用
+  wg/wf id 记账），所以写错它不会崩、只会语义不对。
+- **`gpu.barrier` 在本后端没人接**：Ventus 的转换里 GPU 方言是 illegal 的，`ttg.barrier` 会被核心
+  降成 `gpu.barrier`（掩码在这一步丢掉），所以本后端自己接了两个 pattern——`ttg.barrier` 用更高
+  benefit 直接降到硬件指令（保留掩码），`mlir::gpu::BarrierOp` 也接一个（assert/gluon 之类的来源会
+  造出它），否则会以"无法 legalize"失败。
+- **本阶段只打通"跨 warp 搬运"**：`tt.reduce` 仍不可用——即使归约轴完全落在 warp 之间，实测也会落到
+  `shuffleXor` 上（§4.5）；这颗硬件没有 lane 间数据交换指令，所以它是响亮失败而不是静默。同理
+  `tl.histogram`（共享原子）与 warp 内 `tt.gather`（`shuffleIdx`）都还没通。
+- **LDS 的 VRES 计数比 `ttg.shared` 大**（实测 256 → 272）：汇编器会把自己的对齐填充算进去。
+  launcher 用的是 VRES 那个值（`ldsSize`），所以别拿 `metadata["shared"]` 去当"下发给驱动的 LDS"；
+  两者是"编译器分配量"与"汇编器需求"的关系，测试里断言的是后者 ≥ 前者。
+- **`--gc-sections` 与 LDS 对象无冲突**：`global_smem` 被内核引用，因此不会被裁掉；但这也意味着
+  "有没有 shared 用法"会改变产物的 LDS 记账——空 `ttg.shared`（0 字节）时后端**不创建**该全局量，
+  于是任何误用都会在 `getStackPointer` 处响亮失败，而不是悄悄访问一个 0 字节窗口。
 - `version.json` 尚未纳入版本控制，新克隆会缺该文件（`VentusBackend.hash()` 与身份测试都依赖它）。
 
 ## 9. 未决 / 外部依赖
@@ -550,5 +657,12 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
   Chisel 设计重建。P5 的关键路径。
 - `driver.py` 仍是 stub：Triton 原生启动路径不可用，目前只能 `triton.compile` + 参考启动器。
 - 启动形态：`supported_local_sizes = [[32,1,1],[64,1,1]]`，`mma_local_size = [32,1,1]`，grid 1 维；
-  `v1-64`（`num_warps=2`）profile 已端到端验证（`test_vector_add_two_warps_on_spike`，N=128）。
-- `metadata["shared"]` 目前写死 0，需在 P2 换成真实分配结果。
+  `v1-64`（`num_warps=2`）profile 已端到端验证（spike / cyclesim / rtlsim，N=128；rtlsim 需 §4.2 的
+  寄存器窗口声明修复）。
+- ~~`metadata["shared"]` 目前写死 0，需在 P2 换成真实分配结果。~~ **已解决（P2，2026-09-22）**：
+  `make_llir` 读 `ttg.shared` 写入 metadata；下发给驱动的是 VRES 里汇编器自己的计数（§4.5）。
+- `test_toolchain_identity` 的两条快照断言（`triton_worktree_content_hash`、`libtriton_content_hash`）
+  是"记录时的环境"的照片，任何源码改动或重新构建都会让它们变红；按 `toolchain/README.md` 的
+  "Updating Identity" 流程重录（该流程还要求记录 build/install 事件，目前没有捕获机制），而不是改断言。
+- LDS 化之后仍未通的能力（见 §8）：warp 内 shuffle（`tt.reduce` 的 warp 内部分、warp 内 `tt.gather`）、
+  共享原子（`tl.histogram`）。它们决定 P3/P5 能走到哪一步。
