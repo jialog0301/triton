@@ -451,6 +451,37 @@ lane 间原语；在此之前它是**响亮失败**（`unsupported: shuffle xor`
 `tl.histogram` 的共享原子、warp 内 `tt.gather` 都仍是响亮失败——它们是 P3（分歧/ lane 间数据交换）
 与后续阶段的题目，不是本阶段的遗漏。
 
+### 4.6 P3 实测之一：分歧双路 A/B（2026-09-23）
+
+`tl.where` 默认降为**数据面**的 `arith.select` → `LLVM::SelectOp`（"software" 臂）。P3 增加
+`predication="hardware"` 选项与 `ventus-select-to-branch` pass：该 pass 把每个**标量 `i1`** 的
+`llvm.select` 重写成 `cond_br` 菱形（condition 与两个臂都已求值，只改控制形状，不改语义），
+于是 Ventus LLVM 的分歧分析把它当控制分歧处理，生成 `vbeq`/`setrpc`/`join`。两条臂由同一份
+kernel、同一 shape 编译，只有 codegen 形状不同。
+
+`test_p3_divergence.py`：两臂 LLIR 形状断言（`software` 有 `select i1` 无 `br i1`；`hardware`
+反之）+ 两臂在 spike 上 `num_mismatches=0`。
+
+| 臂 | LLIR 形状 | spike | cyclesim（n=1024, block 32, grid 32） | kernel 内 setrpc/vbeq/join | 指令数 |
+|---|---|---|---|---|---|
+| `software` | `select i1`，无 `br i1` | 0 mismatch | **164955 ns**（16496 cycle） | 1 / 1 / 1 | 52 |
+| `hardware` | `br i1` 菱形，无 `select i1` | 0 mismatch | **171075 ns**（17108 cycle） | 1 / 1 / 1 | 54 |
+
+掩码取 lane 奇偶（`offs % 2 == 0`），所以**每个 warp 都真分歧**——阈值型掩码（`offs < n`）
+只会让边界那一个 warp 分歧，测不出开销。`hardware` 臂每个分歧区多两条指令（`br i1` 落在
+else/空分支上成一条 `j`，另加 join 处的块参数搬运），在本 shape 上比 `software` 臂慢约
+**3.7%**：这颗硬件的 divergence/reconvergence 开销真实存在，但 `tl.where` 这种无副作用的
+选择仍然是数据面更划算，硬件臂的价值在携带副作用的分歧块。`cyclesim` 数字来自
+`tools/divergence_ab.py`，每臂一个进程（timing 模拟器一进程只能开一次）；spike 只做功能真值。
+
+**复现**：
+
+```bash
+source .venv/bin/activate
+export TRITON_HOME="$PWD/.triton-home" PYTHONPATH="$PWD/python"
+python third_party/ventus/tools/divergence_ab.py --backend cyclesim --n 1024 --block 32
+```
+
 ## 5. 与 NVIDIA / AMD 的 pass 对照（MMA 视角）
 
 核心的 `accelerate-matmul` 是 NVIDIA 专属（`AccelerateMatmul.cpp` 只有 `getMMAVersionSafe` 与
@@ -565,7 +596,7 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
 | **P0** | 测量闭环：~~驱动可选 + cycle 级数字~~（§4.1）、~~OpenCL(POCL) 基线~~（§4.3 已建立，首个受控数字待补：先对齐两臂的资源声明）。*已降级*：RTL 多波分发、cyclesim↔RTL 模型校准——验证路径已定 spike（§4.1） | — | 使后续所有结论可证 |
 | **P1** | ~~布局/向量化/占用率~~：索引（第 6 节）、布局偏好（§4.4 + `StripPointerHints`）、tile/warp 曲线与**同形状** OpenCL 对照（§4.4）均已完成。**已移交下一阶段**：块模型下的每元素指令数（掩码/地址算术）——grid=2 时比等价的 OpenCL 标量循环慢 33%，证据与嫌疑见 §4.4 末段 | — | "Triton 生成 vs OpenCL/手写"主结果（同形状：grid=8 平、grid=4 慢 6.6%、各自最优慢 21.7%） |
 | **P2** | ~~LDS + barrier~~：**已完成（2026-09-22）**。`allocate-shared-memory` + `ventus-membar` 进管线；`global_smem`（`addrspace(3)`，大小取 `ttg.shared`）+ `storeDShared`/`loadDShared`/`barrier` 三钩子；`ttg.barrier` 直接降到 `barrier x0, x0, <fence 掩码>`（inline asm，见 §8）。判据：跨 warp 的 `tl.gather` 行交换核在 spike / cyclesim / rtlsim 上 `num_mismatches=0`（§4.5；rtlsim 需要 §4.2 的寄存器窗口声明修复）。**仍属后续阶段**：warp 内 shuffle（`tt.reduce` 的 warp 内部分）、共享原子（`tl.histogram`）、warp 内 `tt.gather` | 核心基建已备 | 支撑 tiling/reduction/MMA；跨 warp 搬运的通路已打通 |
-| **P3** | 分歧硬件（`vbranch`/`join`/掩码栈）与现有软件谓词路径做 A/B | 工具链（新内建/CC） | **论文核心差异化**（软件谓词一臂已实现） |
+| **P3** | 分歧双路 A/B + 有界分歧 + warp 内交换：详见 `docs/plans/2026-09-23-ventus-p3-divergence-and-lane-exchange.md`。子任务：①~~`predication=software/hardware` 两臂对同一 `tl.where` 核 A/B~~（**2026-09-23 完成**，见 §4.6：两臂 spike 0 mismatch，cyclesim 164955 vs 171075 ns，硬件臂慢 3.7%）②>2 层分歧嵌套确定性拒绝 ③`tt.reduce`/warp 内 `tt.gather` 经 LDS（不依赖 shuffle）④`tl.histogram`（共享原子）。软件谓词一臂是 `tl.where`→`llvm.select`；硬件臂由 `ventus-select-to-branch` pass 建 `cond_br` 菱形，同一 op 可切换 | 工具链（新内建/CC） | **论文核心差异化** |
 | **P4** | LLVM 版本对齐 → 一等 Ventus 内建，移除文本边界与相关 hack | 工具链（大工程） | 工程债清理，P3/P5 的前提 |
 | **P5** | M4K8N4 MMA：编码属性 + accelerate-matmul + dot lowering | **M3 的指令/寄存器布局契约** | 性能上界 |
 
@@ -625,6 +656,9 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
 - **装着的 `libVentusRTL.so` 是 nocache 变体**（L1D/L2 被移除）。它的 cycle 数只代表核心微架构，
   不能当 cache-accurate 的硬件性能数字；引用时须写明变体。
 - **不同模拟器的"总时间"窗口不同**（内核 finish 时刻 vs 仿真收尾），跨模拟器比数字前先统一窗口。
+- **`select` → `cond_br` 只对"条件与两臂都已求值"的选择合法**：P3 的 hardware 臂只在标量 `i1` 且
+  两臂是 SSA 值时重写（`SelectToBranch.cpp`）；向量 `<N x i1>` 条件是按元素掩码，属于数据面，不能当
+  控制分歧处理。把 `select` 改成菱形不改变值/副作用，但会让每个分歧区多两条指令（见 §4.6 的 3.7%）。
 - **共享窗口的基址是"按名字"找的**：核心 `LLVM::getSharedMemoryBase` 走 `getStackPointer`，后者在
   模块里查名为 `global_smem` 的全局量并取它的地址。NVIDIA/AMD 把它声明成外部符号（运行时绑定动态
   基址）；Ventus 没有这个钩子，必须给**有大小的 internal 定义**（`addrspace(3)`，大小 = `ttg.shared`），
