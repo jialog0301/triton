@@ -108,7 +108,7 @@ git push                                             # 推工作分支（trackin
 要更新基线（rebase 到最新上游）走 §2.1 的流程；**rebase 干净 ≠ 能编译**，之后必须 `ninja triton`
 并跑全套测试（§2.1 记着上次就是这样发现 `getMulhiFuncName`、elementwise populate 签名的漂移的）。
 
-#### 里程碑 tag（2026-09-21 打）
+#### 里程碑 tag（2026-09-21 起）
 
 | tag | 指向 | 内容 |
 |---|---|---|
@@ -116,6 +116,7 @@ git push                                             # 推工作分支（trackin
 | `ventus-linearlayout` | `e584238e02` | 索引 LinearLayout 化、2-D tile 解锁 |
 | `ventus-p0-measured` | `81c81af087` | 测量闭环：驱动可选 + cycle 数 + OpenCL 对照臂 |
 | `ventus-p1-done` | `d525e255f7` | P1：布局钉死 warp 连续 + 同形状公平对照 |
+| `ventus-p2-done` | `411c502334` | P2：LDS + barrier（跨 warp 搬运）+ 2-warp 寄存器窗口 floor |
 | `backup/main-pre-reset` | `af6b189cf5` | 本地 `main` 重置前的旧位置（内容同在 `backup/ventus-pre-rebase`） |
 
 推 tag：`git push fork --tags`。
