@@ -24,6 +24,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 
 #include "triton/Analysis/AxisInfo.h"
+#include "triton/Analysis/Utility.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -87,6 +88,21 @@ constexpr StringLiteral kSharedMemoryGlobal = "global_smem";
 // Set by the core `allocate-shared-memory` pass: the total shared bytes the
 // kernel needs, and the per-op offset into them.
 constexpr StringLiteral kSharedMemorySizeAttr = "ttg.shared";
+
+// P3 warp-exchange scratch. This target has no shuffle primitive
+// (Ventus-GPGPU-doc: no lane-to-lane data movement), so the warp-local
+// reduction tree and the warp-local gather move their values through LDS
+// instead. The core allocator knows nothing about that traffic (a reduction's
+// intra-warp part produces no `tt.reduce` scratch), so the backend reserves its
+// own region after the core allocation and records its start in a module attr
+// that the shuffle hooks read back.
+//
+// Each warp gets `kPerWarpScratchBytes`; 32 lanes x 8 bytes covers the widest
+// element (`f64`/pointer) the V1 element set can reach. One value at a time
+// occupies the slot: each hook does store -> barrier -> load -> barrier, so a
+// later store (the next bit, or the next operand) cannot race an earlier load.
+constexpr unsigned kPerWarpScratchBytes = 32 * 8;
+constexpr StringLiteral kWarpScratchOffsetAttr = "ventus.warp_scratch_offset";
 
 // The Ventus barrier is `barrier x0, x0, <imm>`, a custom-0 R-type
 // instruction whose 5-bit immediate is a fence bitmask
@@ -277,17 +293,8 @@ Value emitSharedLoad(RewriterBase &rewriter, Location loc, Value ptr,
 // A kernel with no shared memory gets no object at all: nothing can reference
 // it, and a missing symbol makes the core's own lookup fail loudly instead of
 // quietly addressing a zero-byte window.
-void createSharedMemoryGlobal(ModuleOp mod, LLVMTypeConverter &typeConverter) {
-  auto sizeAttr = mod->getAttrOfType<IntegerAttr>(kSharedMemorySizeAttr);
-  if (!sizeAttr)
-    llvm::report_fatal_error(
-        llvm::Twine("Ventus lowering (V1): module has no ") +
-        StringRef(kSharedMemorySizeAttr) +
-        " attribute (run allocate-shared-memory first)");
-  uint64_t size = sizeAttr.getValue().getZExtValue();
-  if (size == 0)
-    return;
-
+void createSharedGlobal(ModuleOp mod, LLVMTypeConverter &typeConverter,
+                        uint64_t size) {
   OpBuilder b(mod.getBodyRegion());
   Type elemTy = typeConverter.convertType(b.getIntegerType(8));
   // 16-byte alignment: 4 x i32 is the widest access shared lowering produces,
@@ -297,6 +304,107 @@ void createSharedMemoryGlobal(ModuleOp mod, LLVMTypeConverter &typeConverter) {
                          LLVM::Linkage::Internal, kSharedMemoryGlobal,
                          /*value=*/LLVM::ZeroAttr::get(mod.getContext()),
                          /*alignment=*/16, kSharedAddressSpace);
+}
+
+void createSharedMemoryGlobal(ModuleOp mod, LLVMTypeConverter &typeConverter) {
+  auto sizeAttr = mod->getAttrOfType<IntegerAttr>(kSharedMemorySizeAttr);
+  if (!sizeAttr)
+    llvm::report_fatal_error(
+        llvm::Twine("Ventus lowering (V1): module has no ") +
+        StringRef(kSharedMemorySizeAttr) +
+        " attribute (run allocate-shared-memory first)");
+  uint64_t coreSize = sizeAttr.getValue().getZExtValue();
+
+  // P3: reserve the warp-exchange region. The core allocator only sizes the
+  // cross-warp part of a reduction (and cross-warp gathers); the intra-warp
+  // tree moves values lane to lane, and this target has no shuffle, so those
+  // bytes have to be added here. The region starts right after the core
+  // allocation, and its start is recorded for the shuffle hooks to find.
+  // A reduction needs the exchange only when its axis is spread across lanes
+  // (`threadsPerWarp[axis] > 1`); a gather needs it only on the warp-local
+  // path, which is exactly what `isWarpLocal` decides.
+  bool needsWarpScratch = false;
+  mod.walk([&](triton::GatherOp gatherOp) {
+    if (GatherLoweringHelper(gatherOp).isWarpLocal())
+      needsWarpScratch = true;
+  });
+  mod.walk([&](triton::ReduceOp reduceOp) {
+    auto srcTy = cast<RankedTensorType>(reduceOp.getOperand(0).getType());
+    auto threadsPerWarp =
+        triton::gpu::getThreadsPerWarp(srcTy.getEncoding(), srcTy.getShape());
+    if (threadsPerWarp[reduceOp.getAxis()] > 1)
+      needsWarpScratch = true;
+  });
+  if (!needsWarpScratch) {
+    if (coreSize != 0)
+      createSharedGlobal(mod, typeConverter, coreSize);
+    return;
+  }
+
+  uint64_t numWarps = triton::gpu::lookupNumWarps(mod);
+  uint64_t size = coreSize + uint64_t(kPerWarpScratchBytes) * numWarps;
+  mod->setAttr(
+      kWarpScratchOffsetAttr,
+      IntegerAttr::get(IntegerType::get(mod.getContext(), 32), coreSize));
+  mod->setAttr(kSharedMemorySizeAttr,
+               IntegerAttr::get(IntegerType::get(mod.getContext(), 32), size));
+  createSharedGlobal(mod, typeConverter, size);
+}
+
+//===----------------------------------------------------------------------===//
+// P3 warp-local exchange through LDS
+//===----------------------------------------------------------------------===//
+
+// The address of `lane`'s slot in the reserved warp-exchange region. The region
+// lives after the core allocation (see createSharedMemoryGlobal), with one
+// `kPerWarpScratchBytes` slot per warp so that concurrently running warps never
+// alias.
+Value warpScratchSlot(RewriterBase &rewriter, Location loc, Type elemTy,
+                      Value lane) {
+  Operation *parent = rewriter.getInsertionBlock()->getParentOp();
+  ModuleOp mod = parent->getParentOfType<ModuleOp>();
+  FunctionOpInterface func = dyn_cast<FunctionOpInterface>(parent);
+  if (!func)
+    func = parent->getParentOfType<FunctionOpInterface>();
+  auto offsetAttr = mod->getAttrOfType<IntegerAttr>(kWarpScratchOffsetAttr);
+  if (!offsetAttr)
+    llvm::report_fatal_error(
+        "Ventus lowering (V1): lane exchange requested but "
+        "no warp scratch was reserved");
+  uint64_t offset = offsetAttr.getValue().getZExtValue();
+
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto ptrTy =
+      LLVM::LLVMPointerType::get(rewriter.getContext(), kSharedAddressSpace);
+  Value warp = mlir::getLaneAndWarpId(rewriter, loc).second;
+  Value base = LLVM::getStackPointer(rewriter, func);
+  Value warpOff =
+      b.add(b.i32_val(offset), b.mul(warp, b.i32_val(kPerWarpScratchBytes)));
+  Value warpBase = b.gep(ptrTy, i8_ty, base, warpOff);
+  Value laneByte = b.mul(lane, b.i32_val(elemBytesOf(elemTy)));
+  return b.gep(ptrTy, i8_ty, warpBase, laneByte);
+}
+
+// Publish `val` for the current lane, rendezvous across the CTA, read the value
+// `srcLane` published, rendezvous again so the slot is free for the next
+// exchange. Two barriers per round-trip is the price of doing lane traffic
+// through memory; the reduce tree and the warp-local gather are block-uniform,
+// so a CTA-wide barrier is the correct (and only available) rendezvous.
+Value exchangeThroughLds(RewriterBase &rewriter, Location loc, Value val,
+                         Value srcLane) {
+  Value lane = mlir::getLaneAndWarpId(rewriter, loc).first;
+  unsigned elemBytes = elemBytesOf(val.getType());
+
+  Value selfPtr = warpScratchSlot(rewriter, loc, val.getType(), lane);
+  auto stored = LLVM::StoreOp::create(rewriter, loc, val, selfPtr);
+  stored.setAlignment(elemBytes);
+  emitBarrier(rewriter, loc, triton::gpu::AddrSpace::Local);
+
+  Value srcPtr = warpScratchSlot(rewriter, loc, val.getType(), srcLane);
+  auto loaded = LLVM::LoadOp::create(rewriter, loc, val.getType(), srcPtr);
+  loaded.setAlignment(elemBytes);
+  emitBarrier(rewriter, loc, triton::gpu::AddrSpace::Local);
+  return loaded.getRes();
 }
 
 } // namespace
@@ -379,17 +487,35 @@ public:
     return emitSharedLoad(rewriter, loc, ptr, elemTy, pred);
   }
 
-  Value shuffleXor(RewriterBase &, Location, Value, int) const override {
-    unsupported("shuffle xor");
+  // P3: this target has no lane-shuffle instruction (Ventus-GPGPU-doc), so the
+  // four shuffle primitives are served from the reserved warp-exchange region
+  // (see createSharedMemoryGlobal). The lane index maths mirrors the semantics
+  // the core shuffles have: xor/up/idx with a warp-size clamp.
+  Value shuffleXor(RewriterBase &rewriter, Location loc, Value val,
+                   int i) const override {
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    Value lane = mlir::getLaneAndWarpId(rewriter, loc).first;
+    return exchangeThroughLds(rewriter, loc, val, b.xor_(lane, b.i32_val(i)));
   }
-  Value shuffleUp(RewriterBase &, Location, Value, int) const override {
-    unsupported("shuffle up");
+  Value shuffleUp(RewriterBase &rewriter, Location loc, Value val,
+                  int i) const override {
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    Value lane = mlir::getLaneAndWarpId(rewriter, loc).first;
+    // PTX `shfl.up` with clamp 0 keeps the caller's value when it would fall
+    // below lane 0; reading the caller's own slot is exactly that value.
+    Value shifted = b.sub(lane, b.i32_val(i));
+    Value src = b.select(b.icmp_ult(lane, b.i32_val(i)), lane, shifted);
+    return exchangeThroughLds(rewriter, loc, val, src);
   }
-  Value shuffleIdx(RewriterBase &, Location, Value, int) const override {
-    unsupported("shuffle idx");
+  Value shuffleIdx(RewriterBase &rewriter, Location loc, Value val,
+                   int i) const override {
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    return exchangeThroughLds(rewriter, loc, val, b.i32_val(i & 0x1f));
   }
-  Value shuffleIdx(RewriterBase &, Location, Value, Value) const override {
-    unsupported("shuffle idx");
+  Value shuffleIdx(RewriterBase &rewriter, Location loc, Value val,
+                   Value i) const override {
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    return exchangeThroughLds(rewriter, loc, val, b.and_(i, b.i32_val(0x1f)));
   }
 
   Value permute(RewriterBase &, Location, Value, Value, Value) const override {
@@ -398,8 +524,8 @@ public:
 
   bool warpReduce(RewriterBase &, Location, SmallVector<Value> &,
                   triton::ReduceOp, unsigned) const override {
-    // Returning false falls back to the generic reduction tree, which then
-    // fails loudly on the shuffle primitives above.
+    // The generic reduction tree is used: it drives the intra-warp part through
+    // `shuffleXor`, which is served from LDS above. No redux hardware here.
     return false;
   }
 
@@ -631,10 +757,15 @@ struct ConvertTritonGPUToVentusLLVM
       // lowerings, so the backend carries none of its own.
       mlir::triton::populateViewOpToLLVMPatterns(typeConverter, patterns,
                                                  benefit);
+      // A reduction that spans warps stages each round through LDS, which is
+      // expressed as a `ttg.convert_layout`. Without this registration the core
+      // reduce lowering cannot materialize that staging and the op stays
+      // illegal (the intra-warp part alone does not need it).
+      mlir::triton::populateConvertLayoutOpToLLVMPatterns(
+          typeConverter, targetInfo, patterns, benefit);
       // Reductions that span warps stage through LDS and rendezvous; the
-      // intra-warp part needs the shuffle primitives the target does not have
-      // yet, so only layouts whose reduction is entirely across warps lower
-      // today (anything else fails loudly in the target's overrides).
+      // intra-warp part drives the shuffle hooks, which this target serves from
+      // its reserved warp-exchange region (see createSharedMemoryGlobal).
       mlir::triton::populateReduceOpToLLVMPatterns(typeConverter, patterns,
                                                    targetInfo, benefit);
       // A gather whose source spans warps moves its elements through the LDS

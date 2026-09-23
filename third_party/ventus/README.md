@@ -449,7 +449,8 @@ lane 间原语；在此之前它是**响亮失败**（`unsupported: shuffle xor`
 
 **仍未闭合**：这套 lowering 只为"跨 warp 搬运"这一条路服务。`tt.reduce` 的 warp 内 shuffle、
 `tl.histogram` 的共享原子、warp 内 `tt.gather` 都仍是响亮失败——它们是 P3（分歧/ lane 间数据交换）
-与后续阶段的题目，不是本阶段的遗漏。
+与后续阶段的题目，不是本阶段的遗漏。（P3 已补上 warp 内 reduce/gather 的 LDS 实现，见 §4.7；
+`tl.histogram` 与 `permute` 仍未做。）
 
 ### 4.6 P3 实测之一：分歧双路 A/B（2026-09-23）
 
@@ -481,6 +482,33 @@ source .venv/bin/activate
 export TRITON_HOME="$PWD/.triton-home" PYTHONPATH="$PWD/python"
 python third_party/ventus/tools/divergence_ab.py --backend cyclesim --n 1024 --block 32
 ```
+
+### 4.7 P3 实测之二：warp 内 reduce / gather 经 LDS（2026-09-23）
+
+这颗硬件没有 lane 间搬运指令，所以 `shuffleXor`/`shuffleUp`/`shuffleIdx` 三个原语全部由 **LDS
+往返**实现：每 lane 把自己的值写进保留区 → `barrier` → 读源 lane 的值 → 再 `barrier`（避免下一轮
+写覆盖尚未读完的槽）。保留区在核心分配之后，按每 warp `32 lane × 8 B` 预留（`createSharedMemoryGlobal`
+把 `ttg.shared` 加上这段并记下 `ventus.warp_scratch_offset`）；`ttg.shared` 因此就是"实际 LDS 需求"，
+launcher 从 ELF 的 VRES 记录读到的值与之对齐。
+
+判据是**单个 warp 的 `tl.sum`**：它的归约完全落在 lane 上，核心分配器不给任何 scratch（`ttg.shared`
+原本为 0），只有后端自己的预留能让 `getStackPointer` 找到 `global_smem`。跨 warp 的归约还需要核心的
+跨 warp staging（`ttg.convert_layout`），该 lowering 此前未注册，本阶段一并接上
+（`populateConvertLayoutOpToLLVMPatterns`）。
+
+| 形状 | 模拟器 | 结果 | 备注 |
+|---|---|---|---|
+| `tl.sum`，BLOCK=32，1 warp（全 lane 归约） | spike | `num_mismatches=0` | `metadata.shared=256`（=预留区），LLIR 里 5 次 `addrspace(3)` 读 + 10 次 `barrier`（5 bit × 2） |
+| `tl.sum`，BLOCK=64，2 warp（lane + warp 两级） | spike | `num_mismatches=0` | lane 级走 LDS、warp 级走核心跨 warp staging |
+| warp 内 `tl.gather`（lane 内反向索引） | spike | `num_mismatches=0` | `isWarpLocal` 路径，走 `shuffleIdx` |
+| `tl.sum`，BLOCK=32，grid=4（n=128） | cyclesim | 0 mismatch，**106790 ns**（10679 cycle） | 每 lane 归约的 barrier 开销真实存在 |
+| warp 内 `tl.gather`，n=32，grid=1 | cyclesim | 0 mismatch，**26840 ns**（2684 cycle） | |
+
+**代价与边界**：每个 shuffle 往返两次 `barrier`，一个 32-lane 归约的 5 个 bit 就是 10 次 CTA barrier，
+所以 cyclesim 上的时间明显高于纯数据面路径——P3.4 要用 `barriersub` 把 warp 内的 rendezvous 降下来。
+`permute` 仍不支持（`unsupported`），`tt.scan` 未验证。跨 warp 的 `tt.reduce` 从"响亮失败"变为可用，
+但它依赖新注册的 `convert_layout`；`tl.sum` 之外的组合子（argmin/argmax）走核心 `getCombineOp` 通用树，
+未单独测。
 
 ## 5. 与 NVIDIA / AMD 的 pass 对照（MMA 视角）
 
@@ -596,7 +624,7 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
 | **P0** | 测量闭环：~~驱动可选 + cycle 级数字~~（§4.1）、~~OpenCL(POCL) 基线~~（§4.3 已建立，首个受控数字待补：先对齐两臂的资源声明）。*已降级*：RTL 多波分发、cyclesim↔RTL 模型校准——验证路径已定 spike（§4.1） | — | 使后续所有结论可证 |
 | **P1** | ~~布局/向量化/占用率~~：索引（第 6 节）、布局偏好（§4.4 + `StripPointerHints`）、tile/warp 曲线与**同形状** OpenCL 对照（§4.4）均已完成。**已移交下一阶段**：块模型下的每元素指令数（掩码/地址算术）——grid=2 时比等价的 OpenCL 标量循环慢 33%，证据与嫌疑见 §4.4 末段 | — | "Triton 生成 vs OpenCL/手写"主结果（同形状：grid=8 平、grid=4 慢 6.6%、各自最优慢 21.7%） |
 | **P2** | ~~LDS + barrier~~：**已完成（2026-09-22）**。`allocate-shared-memory` + `ventus-membar` 进管线；`global_smem`（`addrspace(3)`，大小取 `ttg.shared`）+ `storeDShared`/`loadDShared`/`barrier` 三钩子；`ttg.barrier` 直接降到 `barrier x0, x0, <fence 掩码>`（inline asm，见 §8）。判据：跨 warp 的 `tl.gather` 行交换核在 spike / cyclesim / rtlsim 上 `num_mismatches=0`（§4.5；rtlsim 需要 §4.2 的寄存器窗口声明修复）。**仍属后续阶段**：warp 内 shuffle（`tt.reduce` 的 warp 内部分）、共享原子（`tl.histogram`）、warp 内 `tt.gather` | 核心基建已备 | 支撑 tiling/reduction/MMA；跨 warp 搬运的通路已打通 |
-| **P3** | 分歧双路 A/B + 有界分歧 + warp 内交换：详见 `docs/plans/2026-09-23-ventus-p3-divergence-and-lane-exchange.md`。子任务：①~~`predication=software/hardware` 两臂对同一 `tl.where` 核 A/B~~（**2026-09-23 完成**，见 §4.6：两臂 spike 0 mismatch，cyclesim 164955 vs 171075 ns，硬件臂慢 3.7%）②>2 层分歧嵌套确定性拒绝 ③`tt.reduce`/warp 内 `tt.gather` 经 LDS（不依赖 shuffle）④`tl.histogram`（共享原子）。软件谓词一臂是 `tl.where`→`llvm.select`；硬件臂由 `ventus-select-to-branch` pass 建 `cond_br` 菱形，同一 op 可切换 | 工具链（新内建/CC） | **论文核心差异化** |
+| **P3** | 分歧双路 A/B + 有界分歧 + warp 内交换：详见 `docs/plans/2026-09-23-ventus-p3-divergence-and-lane-exchange.md`。子任务：①~~`predication=software/hardware` 两臂对同一 `tl.where` 核 A/B~~（**2026-09-23 完成**，见 §4.6：两臂 spike 0 mismatch，cyclesim 164955 vs 171075 ns，硬件臂慢 3.7%）②~~>2 层分歧嵌套确定性拒绝~~（**2026-09-23 完成**，`ventus-bounded-divergence`）③~~`tt.reduce`/warp 内 `tt.gather` 经 LDS（不依赖 shuffle）~~（**2026-09-23 完成**，见 §4.7：预留 warp 交换区 + LDS 版 shuffle 原语 + `ttg.convert_layout` 注册；1/2 warp `tl.sum` 与 warp 内 gather 在 spike 0 mismatch，cyclesim 有数）④`tl.histogram`（共享原子）仍待做。软件谓词一臂是 `tl.where`→`llvm.select`；硬件臂由 `ventus-select-to-branch` pass 建 `cond_br` 菱形 | 工具链（新内建/CC） | **论文核心差异化** |
 | **P4** | LLVM 版本对齐 → 一等 Ventus 内建，移除文本边界与相关 hack | 工具链（大工程） | 工程债清理，P3/P5 的前提 |
 | **P5** | M4K8N4 MMA：编码属性 + accelerate-matmul + dot lowering | **M3 的指令/寄存器布局契约** | 性能上界 |
 
@@ -677,7 +705,15 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
   造出它），否则会以"无法 legalize"失败。
 - **本阶段只打通"跨 warp 搬运"**：`tt.reduce` 仍不可用——即使归约轴完全落在 warp 之间，实测也会落到
   `shuffleXor` 上（§4.5）；这颗硬件没有 lane 间数据交换指令，所以它是响亮失败而不是静默。同理
-  `tl.histogram`（共享原子）与 warp 内 `tt.gather`（`shuffleIdx`）都还没通。
+  `tl.histogram`（共享原子）与 warp 内 `tt.gather`（`shuffleIdx`）都还没通。（**2026-09-23 更新**：
+  warp 内 reduce 与 warp 内 gather 已由 LDS 版 shuffle 原语打通，见 §4.7；`tl.histogram`、`permute`
+  仍未做。）
+- **wrap 内 shuffle 是"保留区 + barrier 往返"，不是硬件指令**：`createSharedMemoryGlobal` 把每 warp
+  `32×8 B` 的交换区接在核心分配之后，并把起点写进 `ventus.warp_scratch_offset`；三个 shuffle 原语按
+  "写自己 → barrier → 读源 lane → barrier"实现。**因此单个 warp 的 `tl.sum` 会创建 `global_smem`**
+  （`ttg.shared` 原本是 0），这是后端自己的预留，不是核心分配的结果。跨 warp 的 reduce 还要
+  `populateConvertLayoutOpToLLVMPatterns`（原先未注册），否则 `tt.reduce` 因缺 `convert_layout`
+  而 legalize 失败。
 - **LDS 的 VRES 计数比 `ttg.shared` 大**（实测 256 → 272）：汇编器会把自己的对齐填充算进去。
   launcher 用的是 VRES 那个值（`ldsSize`），所以别拿 `metadata["shared"]` 去当"下发给驱动的 LDS"；
   两者是"编译器分配量"与"汇编器需求"的关系，测试里断言的是后者 ≥ 前者。

@@ -700,6 +700,59 @@ def run_where(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
     return _launch(spec, launch_dir, _where_plan)
 
 
+def _reduce_plan(spec, driver, n, nb, grid):
+    """Host side of the P3 `reduce_kernel`: `z[pid] = sum(x[pid*BLOCK:(pid+1)*BLOCK])`.
+
+    `x` is loaded masked (`offs < n`, `other=0.0`), so the tail program's
+    masked-out lanes contribute zero. `spec.elements_per_program` is the
+    kernel's `BLOCK`."""
+    epp = spec.elements_per_program or 32
+    x = [float(i + 1) for i in range(n)]
+    xa = driver.alloc(nb)
+    driver.to_dev(xa, struct.pack(f"{n}f", *x))
+    za = driver.alloc(grid * 4)
+    driver.to_dev(za, bytes(grid * 4))
+    expected = []
+    for p in range(grid):
+        lo, hi = p * epp, min((p + 1) * epp, n)
+        expected.append(sum(x[lo:hi]) if lo < n else 0.0)
+    return struct.pack("<III", xa, za, spec.scalar), za, expected
+
+
+def run_reduce(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
+    """Launch `reduce_kernel` (P3 warp reduction through LDS) and check it.
+
+    Kernel ABI: x_ptr, z_ptr, n. `spec.elements_per_program` must match the
+    kernel's `BLOCK`; `spec.scalar` is the tail guard the kernel masks with.
+    """
+    return _launch(spec, launch_dir, _reduce_plan)
+
+
+def _warp_gather_plan(spec, driver, n, nb, grid):
+    """Host side of the P3 `warp_gather_kernel`: `z[i] = x[idx[i]]`.
+
+    The index buffer reverses the block, so each lane reads another lane's
+    value and the gather is entirely warp-local."""
+    x = [float(i + 1) for i in range(n)]
+    idx = list(reversed(range(n)))
+    xa = driver.alloc(nb)
+    ia = driver.alloc(nb)
+    za = driver.alloc(nb)
+    driver.to_dev(xa, struct.pack(f"{n}f", *x))
+    driver.to_dev(ia, struct.pack(f"{n}i", *idx))
+    driver.to_dev(za, bytes(nb))
+    return struct.pack("<III", xa, ia, za), za, [x[idx[i]] for i in range(n)]
+
+
+def run_warp_gather(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
+    """Launch `warp_gather_kernel` (P3 warp-local gather through LDS).
+
+    Kernel ABI: x_ptr, idx_ptr, z_ptr. `spec.elements_per_program` is the
+    kernel's `BLOCK`.
+    """
+    return _launch(spec, launch_dir, _warp_gather_plan)
+
+
 def _sha256(path: Path) -> str:
     import hashlib
     return hashlib.sha256(path.read_bytes()).hexdigest()
