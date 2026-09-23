@@ -676,6 +676,30 @@ def run_row_swap(spec: LaunchSpec, block_n: int = 32, launch_dir: Path | None = 
     return _launch(spec, launch_dir, _row_swap_plan(block_n))
 
 
+def _where_plan(spec, driver, n, nb, grid):
+    """Host side of the P3 `where_kernel`: `z[i] = i even ? 2 * x[i] : 0`.
+
+    The kernel tests lane parity, so the mask alternates within every warp; a
+    threshold like `i < k` would only diverge the one boundary warp. `x` is
+    loaded unmasked."""
+    x = [float(i + 1) for i in range(n)]
+    xa = driver.alloc(nb)
+    za = driver.alloc(nb)
+    driver.to_dev(xa, struct.pack(f"{n}f", *x))
+    driver.to_dev(za, bytes(nb))
+    expected = [x[i] * 2.0 if i % 2 == 0 else 0.0 for i in range(n)]
+    return struct.pack("<II", xa, za), za, expected
+
+
+def run_where(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
+    """Launch `where_kernel` (P3 divergence A/B) and check it.
+
+    Kernel ABI: x_ptr, z_ptr. The kernel's mask is lane identity parity, so
+    every warp of the launch diverges regardless of the geometry.
+    """
+    return _launch(spec, launch_dir, _where_plan)
+
+
 def _sha256(path: Path) -> str:
     import hashlib
     return hashlib.sha256(path.read_bytes()).hexdigest()

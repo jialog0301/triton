@@ -35,6 +35,11 @@ std::unique_ptr<OperationPass<ModuleOp>> createVentusMembarPass();
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertTritonGPUToVentusLLVMPass();
 
+// P3 hardware-divergence arm: rewrite scalar `llvm.select` ops into `cond_br`
+// diamonds so the Ventus LLVM emits divergent control flow (`vbeq`/`join`).
+// Runs on the MLIR LLVM dialect; only added when `predication == "hardware"`.
+std::unique_ptr<OperationPass<ModuleOp>> createVentusSelectToBranchPass();
+
 // V1 global tt.load/tt.store lowering (per-element; masked accesses go
 // through llvm.masked.load/store on <1 x T> vectors).
 void populateVentusLoadStoreOpToLLVMPatterns(

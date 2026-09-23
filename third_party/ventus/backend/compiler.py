@@ -41,6 +41,11 @@ class VentusOptions:
     num_warps: int = 4
     num_stages: int = 3
     warp_size: int = 32
+    # How `arith.select` (e.g. `tl.where`) is lowered. "software" keeps the
+    # data-plane `llvm.select` the core conversion emits; "hardware" rewrites
+    # each scalar select into a `cond_br` diamond so the Ventus LLVM treats it
+    # as control-flow divergence and emits `vbeq`/`setrpc`/`join` (README 4.6).
+    predication: str = "software"
     target_features: str = _TARGET_FEATURES
     target_triple: str = _TARGET_TRIPLE
     pointer_width: int = 32
@@ -63,6 +68,8 @@ class VentusOptions:
             raise ValueError("num_stages must be a positive integer")
         if self.warp_size != 32:
             raise ValueError("V1 targets the fixed 32-lane Ventus warp size")
+        if self.predication not in ("software", "hardware"):
+            raise ValueError("predication must be 'software' or 'hardware'")
         if self.target_triple != _TARGET_TRIPLE:
             raise ValueError(f"target_triple must be {_TARGET_TRIPLE!r}")
         if self.pointer_width != 32:
@@ -135,7 +142,7 @@ class VentusBackend(BaseBackend):
         return target == GPUTarget("ventus", "ventus-gpgpu", 32)
 
     def parse_options(self, options):
-        supported = {"num_warps", "num_stages", "warp_size", "target_features", "tool_paths"}
+        supported = {"num_warps", "num_stages", "warp_size", "target_features", "tool_paths", "predication"}
         unknown = set(options) - supported - _IGNORED_OPTIONS
         if unknown:
             raise ValueError(f"unsupported Ventus options: {sorted(unknown)}")
@@ -212,6 +219,11 @@ class VentusBackend(BaseBackend):
         passes.ttgpuir.add_allocate_shared_memory(pm)
         ventus.passes.add_membar(pm)
         ventus.passes.add_to_llvmir(pm)
+        # P3 hardware-divergence arm: after the conversion has produced scalar
+        # `llvm.select` ops and before the module is translated, turn each one
+        # into a cond_br diamond. Default (software) arm leaves them alone.
+        if options.predication == "hardware":
+            ventus.passes.add_select_to_branch(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.convert.add_reconcile_unrealized_casts(pm)

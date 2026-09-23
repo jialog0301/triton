@@ -1,5 +1,6 @@
 add_triton_library(VentusGPUToLLVM
     Membar.cpp
+    SelectToBranch.cpp
     StripPointerHints.cpp
     TritonGPUToLLVM.cpp
     VentusLoadStoreOpToLLVM.cpp

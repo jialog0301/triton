@@ -45,6 +45,9 @@ void init_triton_ventus(py::module_ &m) {
   passes.def("add_membar", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::ventus::createVentusMembarPass());
   });
+  passes.def("add_select_to_branch", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::ventus::createVentusSelectToBranchPass());
+  });
   passes.def("add_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::ventus::createConvertTritonGPUToVentusLLVMPass());
   });
