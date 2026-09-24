@@ -103,6 +103,7 @@ constexpr StringLiteral kSharedMemorySizeAttr = "ttg.shared";
 // later store (the next bit, or the next operand) cannot race an earlier load.
 constexpr unsigned kPerWarpScratchBytes = 32 * 8;
 constexpr StringLiteral kWarpScratchOffsetAttr = "ventus.warp_scratch_offset";
+constexpr StringLiteral kHistogramOffsetAttr = "ventus.histogram_offset";
 
 // The Ventus barrier is `barrier x0, x0, <imm>`, a custom-0 R-type
 // instruction whose 5-bit immediate is a fence bitmask
@@ -335,17 +336,32 @@ void createSharedMemoryGlobal(ModuleOp mod, LLVMTypeConverter &typeConverter) {
     if (threadsPerWarp[reduceOp.getAxis()] > 1)
       needsWarpScratch = true;
   });
-  if (!needsWarpScratch) {
-    if (coreSize != 0)
-      createSharedGlobal(mod, typeConverter, coreSize);
-    return;
+  uint64_t numWarps = triton::gpu::lookupNumWarps(mod);
+  uint64_t size = coreSize;
+  if (needsWarpScratch) {
+    mod->setAttr(
+        kWarpScratchOffsetAttr,
+        IntegerAttr::get(IntegerType::get(mod.getContext(), 32), size));
+    size += uint64_t(kPerWarpScratchBytes) * numWarps;
   }
 
-  uint64_t numWarps = triton::gpu::lookupNumWarps(mod);
-  uint64_t size = coreSize + uint64_t(kPerWarpScratchBytes) * numWarps;
-  mod->setAttr(
-      kWarpScratchOffsetAttr,
-      IntegerAttr::get(IntegerType::get(mod.getContext(), 32), coreSize));
+  std::optional<int64_t> histogramBins;
+  mod.walk([&](triton::HistogramOp histogram) {
+    if (histogramBins)
+      llvm::report_fatal_error("Ventus V1 supports one histogram operation per kernel");
+    auto resultType = histogram.getType();
+    if (!resultType || !resultType.getElementType().isInteger(32))
+      llvm::report_fatal_error("Ventus V1 histogram requires int32 output bins");
+    histogramBins = resultType.getDimSize(0);
+  });
+  if (histogramBins) {
+    mod->setAttr(kHistogramOffsetAttr,
+                 IntegerAttr::get(IntegerType::get(mod.getContext(), 32), size));
+    size += uint64_t(*histogramBins) * 4 * numWarps *
+            triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
+  }
+  if (size == 0)
+    return;
   mod->setAttr(kSharedMemorySizeAttr,
                IntegerAttr::get(IntegerType::get(mod.getContext(), 32), size));
   createSharedGlobal(mod, typeConverter, size);
@@ -773,7 +789,9 @@ struct ConvertTritonGPUToVentusLLVM
       // this milestone implements (the warp-local variants need register
       // shuffles, which fail loudly in the target's overrides).
       mlir::triton::populateGatherOpToLLVMPatterns(typeConverter, patterns,
-                                                   targetInfo, benefit);
+                                                    targetInfo, benefit);
+      mlir::triton::populateHistogramOpToLLVMPatterns(typeConverter, patterns,
+                                                      targetInfo, benefit);
       // Above the core `ttg.barrier` -> `gpu.barrier` pattern, so the fence
       // mask survives into the instruction's immediate.
       patterns.add<VentusBarrierOpConversion, VentusGpuBarrierOpConversion>(

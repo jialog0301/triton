@@ -325,6 +325,7 @@ class LaunchSpec:
     n_elements: int
     local_size: int = 32
     ptr_dtype: str = "f32"
+    result_dtype: str = "f32"
     scalar: int = 0  # n (tail) for the vector_add kernel
     work_dim: int = 1
     num_warps: int = 1
@@ -568,7 +569,10 @@ def _launch(spec: LaunchSpec, launch_dir: Path | None, plan) -> dict:
             simulated_ns = _ModelTime(so, symbol).ns(driver.dev)
         else:
             simulated_ns = None
-        got = struct.unpack(f"{len(expected)}f", driver.from_dev(out_ptr, len(expected) * 4))
+        if spec.result_dtype not in ("f32", "i32"):
+            raise ValueError(f"unsupported result dtype {spec.result_dtype!r}")
+        fmt = "f" if spec.result_dtype == "f32" else "i"
+        got = struct.unpack(f"{len(expected)}{fmt}", driver.from_dev(out_ptr, len(expected) * 4))
     finally:
         driver.close()
 
@@ -751,6 +755,34 @@ def run_warp_gather(spec: LaunchSpec, launch_dir: Path | None = None) -> dict:
     kernel's `BLOCK`.
     """
     return _launch(spec, launch_dir, _warp_gather_plan)
+
+
+def _histogram_plan(values, num_bins, masked_even_lanes):
+    def plan(spec, driver, n, nb, grid):
+        if len(values) != n:
+            raise ValueError(f"histogram values length {len(values)} != n {n}")
+        xa = driver.alloc(nb)
+        za = driver.alloc(num_bins * 4)
+        driver.to_dev(xa, struct.pack(f"{n}i", *values))
+        driver.to_dev(za, bytes(num_bins * 4))
+        expected = [0] * num_bins
+        for lane, value in enumerate(values):
+            if masked_even_lanes and lane % 2:
+                continue
+            if 0 <= value < num_bins:
+                expected[value] += 1
+        return struct.pack("<II", xa, za), za, expected
+
+    return plan
+
+
+def run_histogram(spec: LaunchSpec, values, num_bins: int,
+                  masked_even_lanes: bool = False,
+                  launch_dir: Path | None = None) -> dict:
+    """Launch a single-CTA int32 histogram kernel and compare its bins."""
+    spec.result_dtype = "i32"
+    return _launch(spec, launch_dir,
+                   _histogram_plan(values, num_bins, masked_even_lanes))
 
 
 def _sha256(path: Path) -> str:

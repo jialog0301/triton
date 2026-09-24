@@ -4,6 +4,8 @@
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 
+#include "llvm/Support/ErrorHandling.h"
+
 using namespace mlir;
 using namespace mlir::triton;
 using namespace mlir::triton::gpu;
@@ -25,21 +27,40 @@ computeHistogram(Location loc, ConversionPatternRewriter &rewriter,
                  Operation *sourceOp, const TargetInfoBase &targetInfo) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   SmallVector<Value> histogramValues;
-  // Initialize the shared memory with zeros.
-  int64_t numElementPerThread =
-      ceil<int64_t>(numBins, numThreadPerWarp * numWarps);
-  for (int i = 0; i < numElementPerThread; ++i) {
-    Value offset =
-        b.add(threadId, b.i32_val((i * numWarps * numThreadPerWarp)));
-    offset = b.urem(offset, b.i32_val(numBins));
-    Value sharedMemPtr =
-        b.gep(baseSharedMemPtr.getType(), i32_ty, baseSharedMemPtr, offset);
-    targetInfo.storeShared(rewriter, loc, sharedMemPtr, b.i32_val(0),
-                           b.true_val());
+  // Each lane owns a complete slice. This is deliberately ordinary LDS
+  // traffic: Ventus V1 does not provide a validated LDS atomic contract.
+  auto mod = sourceOp->getParentOfType<ModuleOp>();
+  auto histOffset = mod->getAttrOfType<IntegerAttr>("ventus.histogram_offset");
+  bool lanePrivate = histOffset && numCTAsToCombine == 1;
+  if (histOffset && numCTAsToCombine > 1)
+    llvm::report_fatal_error("Ventus V1 histogram does not support cross-CTA combination");
+  Value laneBase;
+  if (lanePrivate) {
+    laneBase = b.add(b.i32_val(histOffset.getInt()),
+                     b.mul(threadId, b.i32_val(numBins * 4)));
+    for (int i = 0; i < numBins; ++i) {
+      Value offset = b.add(laneBase, b.i32_val(i * 4));
+      Value sharedMemPtr = b.gep(baseSharedMemPtr.getType(), i8_ty,
+                                  baseSharedMemPtr, offset);
+      targetInfo.storeShared(rewriter, loc, sharedMemPtr, b.i32_val(0),
+                             b.true_val());
+    }
+  } else {
+    int64_t numElementPerThread =
+        ceil<int64_t>(numBins, numThreadPerWarp * numWarps);
+    for (int i = 0; i < numElementPerThread; ++i) {
+      Value offset =
+          b.add(threadId, b.i32_val((i * numWarps * numThreadPerWarp)));
+      offset = b.urem(offset, b.i32_val(numBins));
+      Value sharedMemPtr = b.gep(baseSharedMemPtr.getType(), i32_ty,
+                                 baseSharedMemPtr, offset);
+      targetInfo.storeShared(rewriter, loc, sharedMemPtr, b.i32_val(0),
+                             b.true_val());
+    }
   }
   b.barrier(triton::gpu::AddrSpace::Local);
 
-  // Apply atomic add to update the histogram in shared memory.
+  // Apply ordinary load/add/store updates to the current lane's slice.
   Value numBinsValue = b.i32_val(numBins);
   for (int i = 0; i < srcValues.size(); ++i) {
     Value updatePred = b.icmp_ult(srcValues[i], numBinsValue);
@@ -51,9 +72,20 @@ computeHistogram(Location loc, ConversionPatternRewriter &rewriter,
         createIfBlock(rewriter, loc, updatePred);
     (void)prevBlock;
     rewriter.setInsertionPointToStart(ifBlock);
-    Value sharedMemPtr = b.gep(baseSharedMemPtr.getType(), i32_ty,
-                               baseSharedMemPtr, srcValues[i]);
-    atomicAddOne(sharedMemPtr, loc, rewriter);
+    if (lanePrivate) {
+      Value binOffset = b.mul(srcValues[i], b.i32_val(4));
+    Value sharedMemPtr = b.gep(baseSharedMemPtr.getType(), i8_ty,
+                                baseSharedMemPtr,
+                                ValueRange{b.add(laneBase, binOffset)});
+      Value old = targetInfo.loadShared(rewriter, loc, sharedMemPtr, i32_ty,
+                                        b.true_val());
+      targetInfo.storeShared(rewriter, loc, sharedMemPtr,
+                             b.add(old, b.i32_val(1)), b.true_val());
+    } else {
+      Value sharedMemPtr = b.gep(baseSharedMemPtr.getType(), i32_ty,
+                                 baseSharedMemPtr, srcValues[i]);
+      atomicAddOne(sharedMemPtr, loc, rewriter);
+    }
     rewriter.setInsertionPointToStart(thenBlock);
   }
 
@@ -62,17 +94,29 @@ computeHistogram(Location loc, ConversionPatternRewriter &rewriter,
   else
     b.barrier(triton::gpu::AddrSpace::Local);
   for (Value index : indices) {
-    Value sharedMemPtr =
-        b.gep(baseSharedMemPtr.getType(), i32_ty, baseSharedMemPtr, index);
     Value val = b.i32_val(0);
-    for (int cta = 0; cta < numCTAsToCombine; ++cta) {
-      // Replicated CTAs do not accumulate inputs and contribute only zeros.
-      if (cta & ctaBroadcastMask)
-        continue;
-      Value ctaId = numCTAsToCombine > 1 ? b.i32_val(cta) : Value();
-      Value partial = targetInfo.loadDShared(rewriter, loc, sharedMemPtr, ctaId,
-                                             i32_ty, b.true_val());
-      val = b.add(val, partial);
+    if (lanePrivate) {
+      for (int lane = 0; lane < numThreadPerWarp * numWarps; ++lane) {
+        Value offset = b.add(b.i32_val(histOffset.getInt()),
+                             b.i32_val(lane * numBins * 4));
+        offset = b.add(offset, b.mul(index, b.i32_val(4)));
+        Value sharedMemPtr = b.gep(baseSharedMemPtr.getType(), i8_ty,
+                                   baseSharedMemPtr, ValueRange{offset});
+        Value partial = targetInfo.loadShared(rewriter, loc, sharedMemPtr,
+                                              i32_ty, b.true_val());
+        val = b.add(val, partial);
+      }
+    } else {
+      Value sharedMemPtr =
+          b.gep(baseSharedMemPtr.getType(), i32_ty, baseSharedMemPtr, index);
+      for (int cta = 0; cta < numCTAsToCombine; ++cta) {
+        if (cta & ctaBroadcastMask)
+          continue;
+        Value ctaId = numCTAsToCombine > 1 ? b.i32_val(cta) : Value();
+        Value partial = targetInfo.loadDShared(rewriter, loc, sharedMemPtr,
+                                               ctaId, i32_ty, b.true_val());
+        val = b.add(val, partial);
+      }
     }
     histogramValues.push_back(val);
   }
