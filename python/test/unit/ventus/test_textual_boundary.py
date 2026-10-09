@@ -68,10 +68,22 @@ def _softmax(x_ptr, z_ptr, n, BLOCK: tl.constexpr):
     tl.store(z_ptr + offs, e / tl.sum(e, axis=0), mask=offs < n)
 
 
+@triton.jit
+def _masked_neg_inf(x_ptr, z_ptr, n, BLOCK: tl.constexpr):
+    # `other=-inf` makes the consumer emit a bare `-inf` inside a `phi float`,
+    # which the LLVM 16 lexer wants as a 64-bit bit pattern (textual rule
+    # `bare_special_float`).
+    offs = tl.arange(0, BLOCK)
+    x = tl.load(x_ptr + offs, mask=offs < n, other=-float("inf"))
+    m = tl.max(x, axis=0)
+    tl.store(z_ptr + offs, x - m, mask=offs < n)
+
+
 CORPUS = {
     "vector_add": (_vector_add, {"x_ptr": "*fp32", "y_ptr": "*fp32", "z_ptr": "*fp32", "n": "i32"}, {"BLOCK": 32}, 1),
     "reduce": (_reduce, {"x_ptr": "*fp32", "z_ptr": "*fp32", "n": "i32"}, {"BLOCK": 32}, 1),
     "softmax": (_softmax, {"x_ptr": "*fp32", "z_ptr": "*fp32", "n": "i32"}, {"BLOCK": 32}, 1),
+    "masked_neg_inf": (_masked_neg_inf, {"x_ptr": "*fp32", "z_ptr": "*fp32", "n": "i32"}, {"BLOCK": 32}, 1),
 }
 
 
