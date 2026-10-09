@@ -9,6 +9,8 @@ from triton._C.libtriton import ir, passes, llvm
 from triton._C.libtriton import ventus
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 
+from triton.backends.ventus import textual
+
 _TOOL_ROOT = Path("/home/weijiale/Code/cuda2rvv/ventus-env/install/bin")
 _TOOL_NAMES = ("clang", "opt", "llc", "ld.lld")
 _TOOL_PATHS = tuple((name, str(_TOOL_ROOT / name)) for name in _TOOL_NAMES)
@@ -116,18 +118,10 @@ def _apply_ventus_kernel_convention(text: str, kernel_name: str) -> str:
     return pattern.sub(f"define ventus_kernel void @{kernel_name}(", text)
 
 
-# Second consumer-side-only IR feature on the same textual boundary. MLIR's
-# `llvm.or` carries a `disjoint` flag and core `applyLinearLayout` sets it for
-# provably non-overlapping bit ranges, so every LinearLayout-based index
-# computation emits `or disjoint`. The pinned Ventus LLVM 16 parser predates
-# the keyword (added in LLVM 17) and rejects it. Dropping it is
-# semantics-preserving: `disjoint` is a promise about the operands, not an
-# instruction, a value, or any part of the computed result.
-_OR_DISJOINT = re.compile(r"\bor\s+disjoint\s+")
-
-
-def _strip_or_disjoint(text: str) -> str:
-    return _OR_DISJOINT.sub("or ", text)
+# All consumer-side-only textual IR rewrites (e.g. stripping the LLVM-17
+# `or disjoint` flag that `applyLinearLayout` sets) now live in `textual.py`
+# with a rule name, a rationale and unit tests; `make_llir` applies them with
+# `textual.normalize`.
 
 
 class VentusBackend(BaseBackend):
@@ -254,7 +248,7 @@ class VentusBackend(BaseBackend):
         ret = str(llvm_mod)
         del llvm_mod
         del context
-        return _strip_or_disjoint(_apply_ventus_kernel_convention(ret, entry_name))
+        return textual.normalize(_apply_ventus_kernel_convention(ret, entry_name))
 
     @staticmethod
     def _run_tool(argv):
