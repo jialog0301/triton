@@ -450,7 +450,8 @@ lane 间原语；在此之前它是**响亮失败**（`unsupported: shuffle xor`
 **仍未闭合**：这套 lowering 只为"跨 warp 搬运"这一条路服务。`tt.reduce` 的 warp 内 shuffle、
 `tl.histogram` 的共享原子、warp 内 `tt.gather` 都已转为 LDS 路径——它们是 P3（分歧/ lane 间数据交换）
 与后续阶段的题目，不是本阶段的遗漏。（P3 已补上 warp 内 reduce/gather 的 LDS 实现，见 §4.7；
-`tl.histogram` 已完成单 CTA 支持；跨 CTA histogram 与 `permute` 仍未做。）
+`tl.histogram` 已完成单 CTA 支持；跨 CTA histogram 仍未做。`permute`（寄存器内字节置换，非 lane 交换）
+已完成，见 §4.7 末段。）
 
 ### 4.6 P3 实测之一：分歧双路 A/B（2026-09-23）
 
@@ -506,7 +507,7 @@ launcher 从 ELF 的 VRES 记录读到的值与之对齐。
 
 **代价与边界**：每个 shuffle 往返两次 `barrier`，一个 32-lane 归约的 5 个 bit 就是 10 次 CTA barrier，
 所以 cyclesim 上的时间明显高于纯数据面路径——P3.4 要用 `barriersub` 把 warp 内的 rendezvous 降下来。
-`permute` 仍不支持（`unsupported`），`tt.scan` 未验证。跨 warp 的 `tt.reduce` 从"响亮失败"变为可用，
+`permute`（寄存器内字节置换）已支持（见 §4.7 末段），`tt.scan` 未验证。跨 warp 的 `tt.reduce` 从"响亮失败"变为可用，
 但它依赖新注册的 `convert_layout`；`tl.sum` 之外的组合子（argmin/argmax）走核心 `getCombineOp` 通用树，
 未单独测。
 
@@ -703,12 +704,12 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
   降成 `gpu.barrier`（掩码在这一步丢掉），所以本后端自己接了两个 pattern——`ttg.barrier` 用更高
   benefit 直接降到硬件指令（保留掩码），`mlir::gpu::BarrierOp` 也接一个（assert/gluon 之类的来源会
   造出它），否则会以"无法 legalize"失败。
-- **本阶段只打通"跨 warp 搬运"**：`tt.reduce` 仍不可用——即使归约轴完全落在 warp 之间，实测也会落到
-  `shuffleXor` 上（§4.5）；这颗硬件没有 lane 间数据交换指令，所以它是响亮失败而不是静默。同理
-  单 CTA `tl.histogram` 使用每 lane 独占的 `int32` LDS 分片、普通 load/add/store 和 CTA barrier，避免
-  `atomicrmw`/`amoadd.w`；warp 内 `tt.gather`（`shuffleIdx`）也已打通。（**2026-09-24 更新**：
-  warp 内 reduce 与 warp 内 gather 已由 LDS 版 shuffle 原语打通，见 §4.7；`tl.histogram`、`permute`
-  跨 CTA histogram 与 `permute` 仍未做。）
+- **跨 warp 搬运 + warp 内交换（LDS 往返）**：`tt.reduce` 的跨 warp 部分走核心 staging，warp 内部分走
+  `shuffleXor`（本后端用 LDS 往返实现，§4.7）；这颗硬件没有 lane 间数据交换指令，所以是"保留区 +
+  barrier 往返"而不是静默。单 CTA `tl.histogram` 使用每 lane 独占的 `int32` LDS 分片、普通
+  load/add/store 和 CTA barrier，避免 `atomicrmw`/`amoadd.w`；warp 内 `tt.gather`（`shuffleIdx`）
+  与寄存器内 `permute`（`prmt` 语义的 shift/mask/select，非 lane 交换）也已打通。（**2026-09-27 更新**：
+  warp 内 reduce / gather / `permute` 均已实现，见 §4.7；跨 CTA histogram 仍未做。）
 - **wrap 内 shuffle 是"保留区 + barrier 往返"，不是硬件指令**：`createSharedMemoryGlobal` 把每 warp
   `32×8 B` 的交换区接在核心分配之后，并把起点写进 `ventus.warp_scratch_offset`；三个 shuffle 原语按
   "写自己 → barrier → 读源 lane → barrier"实现。**因此单个 warp 的 `tl.sum` 会创建 `global_smem`**

@@ -785,6 +785,21 @@ def run_histogram(spec: LaunchSpec, values, num_bins: int,
                    _histogram_plan(values, num_bins, masked_even_lanes))
 
 
+def run_layout_permute(spec: LaunchSpec, values, launch_dir: Path | None = None) -> dict:
+    """Verify packed uint8 layout conversion preserves every logical element."""
+    def plan(spec, driver, n, nb, grid):
+        if len(values) != n or grid != 1:
+            raise ValueError("layout-permute reference requires one full CTA")
+        xa = driver.alloc(nb)
+        za = driver.alloc(nb)
+        driver.to_dev(xa, struct.pack(f"{n}i", *values))
+        driver.to_dev(za, bytes(nb))
+        return struct.pack("<II", xa, za), za, [v & 0xff for v in values]
+
+    spec.result_dtype = "i32"
+    return _launch(spec, launch_dir, plan)
+
+
 def _sha256(path: Path) -> str:
     import hashlib
     return hashlib.sha256(path.read_bytes()).hexdigest()

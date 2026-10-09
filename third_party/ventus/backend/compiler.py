@@ -39,6 +39,7 @@ _IGNORED_OPTIONS = frozenset({
 @dataclass(frozen=True)
 class VentusOptions:
     num_warps: int = 4
+    num_ctas: int = 1
     num_stages: int = 3
     warp_size: int = 32
     # How `arith.select` (e.g. `tl.where`) is lowered. "software" keeps the
@@ -54,6 +55,7 @@ class VentusOptions:
     debug: bool = False
     sanitize_overflow: bool = False
     arch: str = "ventus-gpgpu"
+    backend_name: str = "ventus"
     supported_fp8_dtypes: tuple[str, ...] = ()
     deprecated_fp8_dtypes: tuple[str, ...] = ()
     allowed_dot_input_precisions: tuple[str, ...] = ("ieee", )
@@ -142,11 +144,14 @@ class VentusBackend(BaseBackend):
         return target == GPUTarget("ventus", "ventus-gpgpu", 32)
 
     def parse_options(self, options):
-        supported = {"num_warps", "num_stages", "warp_size", "target_features", "tool_paths", "predication"}
+        supported = {"num_warps", "num_stages", "warp_size", "target_features", "tool_paths", "predication", "num_ctas"}
         unknown = set(options) - supported - _IGNORED_OPTIONS
         if unknown:
             raise ValueError(f"unsupported Ventus options: {sorted(unknown)}")
         return VentusOptions(**{k: v for k, v in options.items() if k in supported})
+
+    def get_target_name(self, options):
+        return "ventus"
 
     def pack_metadata(self, metadata):
         return metadata.num_warps, metadata.num_stages, metadata.shared
@@ -365,9 +370,28 @@ class VentusBackend(BaseBackend):
             return elf.read_bytes()
 
     def add_stages(self, stages, options, language):
-        if language != Language.TRITON:
+        if language == Language.GLUON:
+            stages["glir"] = lambda src, metadata: src
+            stages["ttgir"] = lambda src, metadata: self.gluon_to_ttgir(src, metadata, options)
+        elif language == Language.TRITON:
+            stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
+            stages["ttgir"] = lambda src, metadata: self.make_ttgir(src, metadata, options)
+        else:
             raise ValueError(f"Ventus does not support input language {language}")
-        stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
-        stages["ttgir"] = lambda src, metadata: self.make_ttgir(src, metadata, options)
         stages["llir"] = lambda src, metadata: self.make_llir(src, metadata, options)
         stages["elf"] = lambda src, metadata: self.make_elf(src, metadata, options)
+
+    @staticmethod
+    def gluon_to_ttgir(mod, metadata, options):
+        pm = ir.pass_manager(mod.context)
+        passes.gluon.add_inliner(pm)
+        passes.gluon.add_infer_coalesced_encodings(pm)
+        passes.gluon.add_resolve_auto_encodings(pm)
+        passes.gluon.add_canonicalizer(pm)
+        passes.common.add_cse(pm)
+        passes.common.add_symbol_dce(pm)
+        pm.run(mod, "gluon_to_ttgir")
+        metadata["num_warps"] = options.num_warps
+        metadata["num_stages"] = options.num_stages
+        metadata["shared"] = 0
+        return mod

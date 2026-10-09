@@ -336,6 +336,12 @@ void createSharedMemoryGlobal(ModuleOp mod, LLVMTypeConverter &typeConverter) {
     if (threadsPerWarp[reduceOp.getAxis()] > 1)
       needsWarpScratch = true;
   });
+  // A within-warp layout conversion can use the same shuffle hooks as
+  // reduction and gather, even if neither of those ops is present.
+  mod.walk([&](triton::gpu::ConvertLayoutOp convertOp) {
+    if (cvtNeedsWarpShuffle(convertOp))
+      needsWarpScratch = true;
+  });
   uint64_t numWarps = triton::gpu::lookupNumWarps(mod);
   uint64_t size = coreSize;
   if (needsWarpScratch) {
@@ -534,8 +540,30 @@ public:
     return exchangeThroughLds(rewriter, loc, val, b.and_(i, b.i32_val(0x1f)));
   }
 
-  Value permute(RewriterBase &, Location, Value, Value, Value) const override {
-    unsupported("shuffle permute");
+  Value permute(RewriterBase &rewriter, Location loc, Value a, Value b,
+                Value selector) const override {
+    // The core within-warp layout conversion uses NVIDIA's prmt.b32
+    // selector: each nibble selects a byte in {a[0..3], b[0..3]}. Bit 3
+    // requests replication of that byte's sign bit, not a lane shuffle.
+    TritonLLVMOpBuilder op(loc, rewriter);
+    Value result = op.i32_val(0);
+    for (unsigned outputByte = 0; outputByte < 4; ++outputByte) {
+      Value nibble = op.and_(op.lshr(selector, op.i32_val(4 * outputByte)),
+                             op.i32_val(15));
+      Value byteIndex = op.and_(nibble, op.i32_val(3));
+      Value source = op.select(
+          op.icmp_eq(op.and_(nibble, op.i32_val(4)), op.i32_val(0)), a, b);
+      Value selected = op.and_(
+          op.lshr(source, op.shl(byteIndex, op.i32_val(3))),
+          op.i32_val(255));
+      Value sign = op.select(op.icmp_eq(op.and_(selected, op.i32_val(128)),
+                                       op.i32_val(0)),
+                             op.i32_val(0), op.i32_val(255));
+      selected = op.select(op.icmp_ult(nibble, op.i32_val(8)), selected, sign);
+      result = op.or_(result,
+                      op.shl(selected, op.i32_val(8 * outputByte)));
+    }
+    return result;
   }
 
   bool warpReduce(RewriterBase &, Location, SmallVector<Value> &,
