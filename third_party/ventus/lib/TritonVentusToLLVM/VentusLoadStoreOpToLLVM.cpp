@@ -25,6 +25,7 @@
 #include "Target/TritonVentusToLLVM.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h"
@@ -112,6 +113,53 @@ struct VentusElementwiseOpConversion
     return {DestOp::create(rewriter, loc, elemTy, operands[0],
                            adaptor.getAttributes().getValue())};
   }
+};
+
+// Math ops the Ventus LLVM 16 cannot expand itself.
+//
+// The core converts `math::ExpOp` (and friends) to the same `math.*` op, which
+// the dialect export turns into an `llvm.exp.f32`-style intrinsic. The pinned
+// Ventus llc cannot lower that intrinsic on this target: `llc` crashes in
+// SelectionDAG's `ExpandFPLibCall` -> `RISCVTargetLowering::LowerCall` while
+// trying to materialise a libm call. Clang's own OpenCL output never hits this
+// because it emits a direct call to the libclc-provided, Itanium-mangled symbol
+// (`_Z3expf` for `exp(float)`, verified against the reference softmax's
+// object0.riscv). This pattern reproduces that: it emits a plain `LLVM::CallOp`
+// to the mangled symbol, which `opt`/`llc`/`ld.lld` all accept.
+//
+// It is registered with a higher benefit than the core pattern so it shadows
+// `math::ExpOp -> math::ExpOp`; only the ops listed at registration need it.
+// `symbol` is the libclc export for the fp32 variant.
+template <typename SourceOp>
+struct VentusLibcallOpConversion
+    : public gpu::ElementwiseOpConversionBase<
+          SourceOp, VentusLibcallOpConversion<SourceOp>> {
+  using Base = gpu::ElementwiseOpConversionBase<
+      SourceOp, VentusLibcallOpConversion<SourceOp>>;
+  using Base::Base;
+  using OpAdaptor = typename Base::OpAdaptor;
+
+  VentusLibcallOpConversion(StringRef symbol, LLVMTypeConverter &converter,
+                            ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                            PatternBenefit benefit)
+      : Base(converter, axisInfoAnalysis, benefit), symbol(symbol) {}
+
+  SmallVector<Value> createDestOps(SourceOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy,
+                                   gpu::MultipleOperandsRange operands,
+                                   Location loc) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(elemTy, {elemTy});
+    gpu::appendOrGetExternFuncOp(rewriter, op, symbol, funcTy);
+    Operation *call =
+        LLVM::CallOp::create(rewriter, loc, funcTy,
+                             SymbolRefAttr::get(rewriter.getContext(), symbol),
+                             operands[0]);
+    return {call->getResult(0)};
+  }
+
+private:
+  StringRef symbol;
 };
 
 struct VentusLoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
@@ -238,6 +286,29 @@ void populateVentusLoadStoreOpToLLVMPatterns(
       typeConverter, axisInfoAnalysis, benefit);
   patterns.add<VentusElementwiseOpConversion<arith::TruncFOp, LLVM::FPTruncOp>>(
       typeConverter, axisInfoAnalysis, benefit);
+
+  // Math ops the Ventus llc cannot expand (see VentusLibcallOpConversion).
+  // Registered one benefit above the core `math.* -> math.*` patterns so they
+  // shadow them; the symbol is the libclc Itanium-mangled fp32 export.
+  PatternBenefit libcallBenefit(benefit.getBenefit() + 1);
+  patterns.add<VentusLibcallOpConversion<math::ExpOp>>(
+      "_Z3expf", typeConverter, axisInfoAnalysis, libcallBenefit);
+  patterns.add<VentusLibcallOpConversion<math::Exp2Op>>(
+      "_Z4exp2f", typeConverter, axisInfoAnalysis, libcallBenefit);
+  patterns.add<VentusLibcallOpConversion<math::LogOp>>(
+      "_Z3logf", typeConverter, axisInfoAnalysis, libcallBenefit);
+  patterns.add<VentusLibcallOpConversion<math::Log2Op>>(
+      "_Z4log2f", typeConverter, axisInfoAnalysis, libcallBenefit);
+  patterns.add<VentusLibcallOpConversion<math::SinOp>>(
+      "_Z3sinf", typeConverter, axisInfoAnalysis, libcallBenefit);
+  patterns.add<VentusLibcallOpConversion<math::CosOp>>(
+      "_Z3cosf", typeConverter, axisInfoAnalysis, libcallBenefit);
+  patterns.add<VentusLibcallOpConversion<math::SqrtOp>>(
+      "_Z4sqrtf", typeConverter, axisInfoAnalysis, libcallBenefit);
+  patterns.add<VentusLibcallOpConversion<math::RsqrtOp>>(
+      "_Z5rsqrtf", typeConverter, axisInfoAnalysis, libcallBenefit);
+  patterns.add<VentusLibcallOpConversion<math::ErfOp>>(
+      "_Z3erff", typeConverter, axisInfoAnalysis, libcallBenefit);
 }
 
 } // namespace mlir::triton::ventus
