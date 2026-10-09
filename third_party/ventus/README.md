@@ -716,6 +716,10 @@ rank 无关；`expand_dims`/`broadcast` 是 2-D tile 的第二个前置条件，
   （`ttg.shared` 原本是 0），这是后端自己的预留，不是核心分配的结果。跨 warp 的 reduce 还要
   `populateConvertLayoutOpToLLVMPatterns`（原先未注册），否则 `tt.reduce` 因缺 `convert_layout`
   而 legalize 失败。
+- **两个"一等内建"的替换点已标注（P4）**：barrier 的发射点是 `emitBarrier()`，warp 内交换的发射点是
+  `exchangeThroughLds()`；两者在源码里都带 `EXTENSION SEAM (P4)` 注释。消费端 LLVM 学会 Ventus 内建表
+  （或工具链版本对齐）后，只改这两个函数：barrier 换成真正的 `llvm.riscv.ventus.barrier` 声明，shuffle
+  换成硬件 shuffle 指令（若目标长出来）。其余 lowering 不受影响。
 - **LDS 的 VRES 计数比 `ttg.shared` 大**（实测 256 → 272）：汇编器会把自己的对齐填充算进去。
   launcher 用的是 VRES 那个值（`ldsSize`），所以别拿 `metadata["shared"]` 去当"下发给驱动的 LDS"；
   两者是"编译器分配量"与"汇编器需求"的关系，测试里断言的是后者 ≥ 前者。

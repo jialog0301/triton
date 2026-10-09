@@ -135,10 +135,14 @@ unsigned barrierImmediate(triton::gpu::AddrSpace targets) {
 // instruction and is opaque to both compilers. `opt -passes=verify` and `llc`
 // in the elf stage check that the toolchain still accepts it.
 //
+// EXTENSION SEAM (P4): when the consumer LLVM learns the Ventus builtin table
+// (or the toolchain revision is aligned), replace this inline-asm emission with
+// a real `llvm.riscv.ventus.barrier` declaration. Only this function changes.
+//
 // Semantics: every warp of the work-group waits until all warps that have not
 // finished executing have reached the barrier
 // (`gpgpu/docs/Ventus-GPGPU-doc.md`, custom instruction 2;
-// `pipeline/warp_schedule.scala` tracks the per-work-group arrival mask).
+// `pipeline/warp_schedule.scala` tracks the per-workgroup arrival mask).
 // That is the CTA-wide rendezvous Triton asks for.
 void emitBarrier(RewriterBase &rewriter, Location loc,
                  triton::gpu::AddrSpace targets) {
@@ -412,6 +416,10 @@ Value warpScratchSlot(RewriterBase &rewriter, Location loc, Type elemTy,
 // exchange. Two barriers per round-trip is the price of doing lane traffic
 // through memory; the reduce tree and the warp-local gather are block-uniform,
 // so a CTA-wide barrier is the correct (and only available) rendezvous.
+//
+// EXTENSION SEAM (P4): a hardware lane-shuffle instruction, if the target ever
+// grows one, replaces this LDS round-trip here. `shuffleXor/Up/Idx` and
+// `warpReduce` stay as-is.
 Value exchangeThroughLds(RewriterBase &rewriter, Location loc, Value val,
                          Value srcLane) {
   Value lane = mlir::getLaneAndWarpId(rewriter, loc).first;
