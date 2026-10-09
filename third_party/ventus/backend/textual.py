@@ -29,6 +29,12 @@ RULES = (
         replacement="or ",
         rationale="`disjoint` is an LLVM 17 keyword and a promise about the operands, not part of the result; the LLVM 16 parser rejects it.",
     ),
+    Rule(
+        name="attr_nocreateundeforpoison",
+        pattern=re.compile(r"\bnocreateundeforpoison\s+"),
+        replacement="",
+        rationale="A newer function attribute keyword the LLVM 16 lexer rejects; dropping it only forgoes an optimization hint.",
+    ),
 )
 
 
