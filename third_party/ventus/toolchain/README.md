@@ -133,6 +133,15 @@ Triton backend, checked textual `kernel.ventus.ll`, absolute-path Ventus LLVM 16
 subprocesses, and producer-local ELF inspection/link orchestration. Tasks 4-7
 may be reconsidered only after an explicit LLVM/MLIR revision-alignment record.
 
+**Alignment record:** `docs/plans/2026-10-08-ventus-llvm-alignment.md` now
+provides it — the consumer is LLVM 24.0.0git vs the toolchain's LLVM 16.0.0git,
+with the full boundary inventory, the two candidate strategies, and a spike
+showing the consumer LLVM 24 has no Ventus intrinsics (so a first-class builtin
+needs a consumer LLVM patch/rebuild, not a backend-only change). The P4 work
+(`backend/textual.py` normalizer, the end-to-end boundary sentinel, and the two
+`EXTENSION SEAM (P4)` points) is the producer-local handling that record says to
+keep until an alignment is funded.
+
 ## Runtime Status
 
 The current runtime build and install events were not captured by one
